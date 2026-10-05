@@ -50,8 +50,11 @@ least 10 of them `correct`) or the taxon stays `unvalidated`.
 **Evaluate Whombat first**, with Label Studio as the alternative and a minimal local UI only if
 both fail. Criteria: spectrogram plus audio playback of clips, a correct/incorrect/unsure
 verdict with a true-species field, file-based import/export with no cloud service, and running
-locally in either environment. Review uses only masked clips, so it may run on the processing
-machine or in the development environment.
+locally on the reviewer's host. Review uses only masked clips from the store, so it may run on
+any host configured with the `processing` profile and access to the store; it never reads the
+quarantine. A review-only host is installed like any processing host
+([install](../install/install-design.md)), so `config check` passes, and its quarantine
+simply stays empty.
 
 | Candidate | License | Notes |
 |---|---|---|

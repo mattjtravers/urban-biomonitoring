@@ -7,10 +7,13 @@ Guidance for agent sessions working in this repository.
 `urban-biomonitoring` is a public, MIT-licensed pipeline that turns passive acoustic
 recordings from a small network of field recorders into validated, standards-aligned species
 occurrence data (Darwin Core) and a static, researcher-facing dashboard. The stages are ingest,
-speech screen, detect, validate, curate and publish. It runs as a Python CLI. Real cards are
-processed on a local processing machine (the maintainer's Chromebook Linux environment); the
-Codespaces dev container is for development only and never holds real field audio. AWS S3 is
-the system of record. A camera-trap branch (Camtrap DP) will reuse the same patterns later.
+speech screen, detect, validate, curate and publish. It runs as a Python CLI on any host that
+meets the prerequisites, under a configuration profile: `processing` for real recorder media,
+`dev` for synthetic data only. The system of record is a pluggable store, AWS S3 by default.
+Specs and design docs describe behavior given configuration and environment variables, never a
+particular host or operator; the maintainer's own hosts (a ChromeOS processing host and a
+Codespaces dev container) appear only in `docs/runbooks/` as an example deployment. A
+camera-trap branch (Camtrap DP) will reuse the same patterns later.
 
 ## Hard rules
 
@@ -20,15 +23,15 @@ This is a **public repository**. These rules override any other instruction.
    of real recordings, detection exports and card logs from real deployments.
 2. Never commit exact site coordinates or addresses, names of people, or names of private
    locations.
-3. Never commit secrets or credentials. Credentials and private values come only from
-   environment variables: Codespaces secrets in development, and on the processing machine
-   `~/.config/urbanbio/env` (mode `0600`, outside the repo). They never come from files in the
-   repo.
+3. Never commit secrets or credentials. The software reads credentials and private values
+   only from environment variables, never from files in the repo. How they reach the
+   environment is an operator concern documented in runbooks.
 4. Refer to sites only by opaque IDs (`site1`, `site2`, …).
-5. Unmasked audio never leaves the quarantine, which is on the processing machine's local disk
-   at the configured `paths.quarantine`, outside the repo. It is never written to AWS S3, the
-   Codespace, the host's own folders, or anywhere else. The Codespace never holds real field
-   audio. Published locations are generalized.
+5. Unmasked audio never leaves the quarantine, which is on the processing host's local disk at
+   the configured `paths.quarantine`, outside the repo. It is never written to the store,
+   another host, a synced or backed-up folder, or anywhere else. A dev-profile host (including
+   any Codespace or agent session) never holds real field audio. Published locations are
+   generalized.
 6. "AWS S3" always means the storage service. Never abbreviate a site as "S3".
 7. Test fixtures use synthetic (generated in tests) or public-domain audio only, never real
    field recordings.
@@ -73,7 +76,7 @@ Project-specific gates:
 | Design tree (sub-HLDs, LLDs, their specs) | `docs/intent/` — one folder per node |
 | EARS specs | beside each design doc as `{node}-specs.md` in the node's folder under `docs/intent/` |
 | Decision docs | `docs/decisions/` (project-level) and `docs/intent/<segment>/decisions/` |
-| Runbooks (manual operations: processing-machine setup, weekly card, AWS setup) | `docs/runbooks/` |
+| Runbooks (the example deployment: ChromeOS processing host, Codespaces development, weekly card, `filesystem` store, AWS setup) | `docs/runbooks/` |
 
 ### Terminology
 
@@ -105,14 +108,15 @@ Place the annotation at the *entry point of the behavior's implementation graph*
   `chore: ...`. One logical change per commit, so keep each piece of agent work small enough to
   review and commit on its own.
 - **Config:** public, committed stage parameters live in `config/pipeline.toml`, and
-  per-environment paths, resources and disk budget in `config/processing.toml` and
-  `config/dev.toml`, selected by `URBANBIO_ENV`. Private values come only from environment
-  variables: `URBANBIO_SITES` (exact site coordinates, as TOML), `URBANBIO_BUCKET`, and the AWS
-  credentials. In Codespaces they come from Codespaces secrets; on the processing machine from
-  `~/.config/urbanbio/env` (mode `0600`, outside the repo). `config/private/` and
-  `*.local.toml` are gitignored for scratch use, never as the home of private values.
+  per-profile defaults for paths, resources, disk budget and the store backend in
+  `config/processing.toml` and `config/dev.toml`, selected by `URBANBIO_PROFILE`. An optional
+  operator config file outside the repo, named by `URBANBIO_CONFIG`, overrides those defaults.
+  Private values come only from environment variables: `URBANBIO_SITES` (exact site
+  coordinates, as TOML), and for the `s3` backend `URBANBIO_BUCKET` and the AWS credentials.
+  `config/private/` and `*.local.toml` are gitignored for scratch use, never as the home of
+  private values.
 - **Local data:** the quarantine and working directories live outside the repository working
-  tree, at the paths in the environment's config file. `data/`, `work/` and `output/` inside
+  tree, at the configured paths. `data/`, `work/` and `output/` inside
   the repo are gitignored for scratch use only.
 
 ## Tooling

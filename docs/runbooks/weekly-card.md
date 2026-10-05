@@ -1,21 +1,22 @@
 # Runbook: Weekly Card Processing
 
-Processes a recorder's microSD card on the processing machine: copy it into the quarantine,
-run the pipeline, and wipe the card only once every file is archived. Design:
+Processes a recorder's microSD card on a processing host: copy it into the quarantine, run the
+pipeline, and wipe the card only once every file is archived in the store. Design:
 [intake](../intent/ingest/intake/intake-design.md), [runs](../intent/runs/runs-design.md)
-§ Long Runs on the Processing Machine.
+§ Long and Interrupted Runs.
 
-Requires a processing machine set up with
-[local-processing-setup.md](local-processing-setup.md).
+The commands are written for the maintainer's example deployment, a host set up with
+[chromeos-processing-host.md](chromeos-processing-host.md), with the default paths. On another
+host, substitute its card mount point and the paths printed by `uv run urbanbio config paths`.
 
 The card is the only backup of its recordings until `urbanbio retrieval status` says **safe to
 wipe**. Don't wipe, reformat, or reuse it before then.
 
-## 1. Prepare the machine
+## 1. Prepare the host
 
 1. Plug in the charger and the Ethernet cable.
 2. Check the power settings from the setup runbook (no sleep while charging, no sleep when the
-   cover closes). The machine stays awake for the whole run, which takes hours.
+   cover closes). The host stays awake for the whole run, which takes hours.
 
 ## 2. Update to the tested code
 
@@ -27,7 +28,7 @@ uv run urbanbio config check
 ```
 
 This runs exactly the code and locked dependencies that CI tested on `main`. Pipeline commands
-on the processing machine refuse to start with uncommitted changes
+under the `processing` profile refuse to start with uncommitted changes
 ([runs](../intent/runs/runs-design.md) § Run Record).
 
 ## 3. Start a tmux session
@@ -92,7 +93,7 @@ When it ends, check the exit code (`echo $?`):
 | `3` | Configuration or environment error | Fix what it reports; `uv run urbanbio config check` |
 | `4` | Lock held | Another command is running. Wait for it; if its PID is gone, re-run with `--force-unlock` |
 
-If the machine slept, lost power, or the terminal closed, re-run the same `process` command. It
+If the host slept, lost power, or the terminal closed, re-run the same `process` command. It
 resumes and skips completed units.
 
 ## 6. Check retrieval status and wipe the card
@@ -103,7 +104,7 @@ uv run urbanbio retrieval status <retrieval_id>
 
 Wipe the card **only** when this prints **safe to wipe**. Then format it as the recorder's user
 guide describes, and it is ready for the next deployment. If it doesn't print safe to wipe, it
-lists the files that aren't archived. Resolve them (step 5's table) and check again.
+lists the files that aren't archived, or why the store doesn't count as a separate copy. Resolve them (step 5's table) and check again.
 
 Speech-labeling holds older than 30 days are listed here too. Label them and run
 `urbanbio speech label --import` so they can be purged.
@@ -118,7 +119,7 @@ the first has finished. Only one pipeline command runs at a time.
 
 The first real card settles open questions in the design docs. Record each finding in the doc
 that owns it. Use synthetic fixtures for anything the tests need, and never copy real files,
-real positions, or real recordings into the repository. Keep the machine awake throughout, so
+real positions, or real recordings into the repository. Keep the host awake throughout, so
 the timings don't include time spent suspended.
 
 | Measurement | Where it is recorded |
@@ -126,9 +127,9 @@ the timings don't include time spent suspended.
 | File naming, extension case, bit depth, channel count, GUANO fields and formats, vendor chunk location | [songmeter-micro2](../intent/ingest/songmeter-micro2/songmeter-micro2-design.md) |
 | Whether the Configurator offers UTC; how the device behaves across a daylight-saving change | [songmeter-micro2](../intent/ingest/songmeter-micro2/songmeter-micro2-design.md) |
 | Whether the Configurator shows the device clock before resynchronizing (`--clock-offset-s`) | [intake](../intent/ingest/intake/intake-design.md) § Deferred |
-| Installed dependency footprint and uv cache size (settles `quarantine.budget_gb`) | [intake](../intent/ingest/intake/intake-design.md) § Disk Budget |
+| Installed dependency footprint and uv cache size (settles `quarantine.budget_gb`) | [intake](../intent/ingest/intake/intake-design.md) § Disk Budget, [install](../intent/install/install-design.md) § Sizing guidance |
 | FLAC size as a fraction of WAV; upload throughput | [archive](../intent/archive/archive-design.md) § Cost |
-| Peak memory and wall-clock time per stage for one card; whether 3–4 workers fit | [runs](../intent/runs/runs-design.md) § Resource Limits |
+| Peak memory and wall-clock time per stage for one card; whether 3–4 workers fit; memory per worker | [runs](../intent/runs/runs-design.md) § Resource Limits, [install](../intent/install/install-design.md) § Sizing guidance |
 | Speech screen and detect throughput | [speech-screen](../intent/speech-screen/speech-screen-design.md) § Compute, [detect](../intent/detect/detect-design.md) § Detect Flow |
 
 Peak memory, wall-clock time, and the worker count are in each run's record:

@@ -30,7 +30,7 @@ That is untested until a Micro card is available.
 
 - "All non-audio files" are at the card's top level; "all audio files are saved to a folder
   named `Data`" [UG p.93].
-- Configuration and firmware files may also be on the card if the maintainer saved them there
+- Configuration and firmware files may also be on the card if the operator saved them there
   [UG p.27]. `list_media` classifies them as `unknown`, and they're archived verbatim with the
   device logs.
 - The card's volume label is the first 11 characters of the recorder name (firmware 4.4+)

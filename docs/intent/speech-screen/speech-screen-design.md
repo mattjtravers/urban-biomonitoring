@@ -89,9 +89,9 @@ Two functions construct a `MaskedAudio`, and nothing else can:
   checked against `masked_pcm_sha256`.
 
  `MaskedAudio` carries `audio_file_id`, `mask_version`,
-the event IDs applied (cumulative across versions), and `masked_seconds`. The archive's upload API accepts only
+the event IDs applied (cumulative across versions), and `masked_seconds`. The archive's write API accepts only
 `MaskedAudio` ([archive](../archive/archive-design.md)), so unmasked samples can't reach
-AWS S3 through it. `QuarantinedAudio` can only be loaded from a path under the quarantine root.
+the store through it. `QuarantinedAudio` can only be loaded from a path under the quarantine root.
 
 A file with no events still goes through `apply_mask` and produces a `MaskedAudio` with zero
 masked seconds. Every archived file has been screened.
@@ -137,12 +137,12 @@ original once it is verified. It chooses files and holds them in `quarantine/spe
 
 Selection uses a seeded RNG, and the seed is recorded in the run.
 
-**Labeling.** The maintainer listens to held originals on the processing machine and records speech
+**Labeling.** The operator listens to held originals on the processing host and records speech
 intervals in `quarantine/speech-labeling/labels.csv` (`audio_file_id, start_s, end_s,
 reviewer_id`), one row per interval. A file with no speech gets one row with `start_s` and
 `end_s` empty. Every held file must have at least one row before import. `urbanbio speech
 label --import` validates the file and writes the `speech_labels` table (no audio), then
-releases the holds. Playback is local, on the processing machine, for listening only. Nothing is
+releases the holds. Playback is local, on the processing host, for listening only. Nothing is
 saved outside the quarantine.
 
 **Metrics** (`urbanbio speech recall`), per stratum and weighted to the population with
@@ -183,7 +183,7 @@ Per recorded minute, the screen runs one BirdNET pass at 1.5 s hop (about twice 
 detect's non-overlapping pass) and one Silero pass. A week from two recorders is about 67 hours
 of audio. A worker is one process that loads both detectors once and screens one file at a
 time ([runs](../runs/runs-design.md) § Resource Limits); `resources.workers` processes run
-in parallel. Throughput and peak memory on the processing machine are **TODO: measure on the
+in parallel. Throughput and peak memory at the default worker count are **TODO: measure on the
 first real card**. The run records units per second and its `resources`.
 
 ## Decisions & Alternatives

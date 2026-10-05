@@ -8,10 +8,10 @@ prefix: INGEST-INTAKE
 ## Context and Design Philosophy
 
 Intake is the only part of the pipeline that handles a card's raw contents. It owns the
-quarantine (HLD §5.1): a directory on the processing machine's local disk at `paths.quarantine`
-([config-cli](../../config-cli/config-cli-design.md) § Environments), outside the repository
+quarantine (HLD §5.1): a directory on the processing host's local disk at `paths.quarantine`
+([config-cli](../../config-cli/config-cli-design.md) § Configuration), outside the repository
 working tree. Unmasked audio enters the quarantine and is deleted there; it never leaves the
-quarantine, and so never leaves the processing machine.
+quarantine, and so never leaves the processing host.
 
 Intake does five things, in order: fix each file's identity with SHA-256 before anything
 parses it; register the retrieval; normalize every timestamp to UTC; record what the card says
@@ -20,21 +20,19 @@ has verified.
 
 ## Transfer into the Quarantine
 
-The recorder's microSD card is read by the processing machine's card reader and copied
-straight from the card into the quarantine. This is a manual runbook step (Tenet 4). On the
-reference machine (a ChromeOS Linux environment), the card is shared with Linux and appears
-under `/mnt/chromeos/removable/<card name>/`:
+The recorder's microSD card is read by the processing host and copied straight from the
+card's mount point into the quarantine. This is a manual runbook step (Tenet 4). Where the card
+is mounted depends on the host; the deployment runbooks give the path for each example host.
 
 ```bash
-mkdir -p ~/urbanbio/quarantine/incoming/<label>
-cp -r --preserve=timestamps /mnt/chromeos/removable/<card name>/. \
-  ~/urbanbio/quarantine/incoming/<label>/
+mkdir -p <paths.quarantine>/incoming/<label>
+cp -r --preserve=timestamps <card mount>/. <paths.quarantine>/incoming/<label>/
 ```
 
 Before ingest, the copy is compared with the card byte for byte:
 
 ```bash
-diff -rq /mnt/chromeos/removable/<card name>/ ~/urbanbio/quarantine/incoming/<label>/
+diff -rq <card mount>/ <paths.quarantine>/incoming/<label>/
 ```
 
 Any output means the copy is incomplete or corrupt. The copy is deleted and repeated. Ingest's
@@ -42,17 +40,17 @@ hashes are computed from the copy, so this comparison is the only check that the
 the card.
 
 The copy goes from the card's mount directly into `incoming/`. It is never staged anywhere
-else on the machine, including the host operating system's own folders (on ChromeOS, *My
-files*, *Downloads*, or Google Drive), which may be synced or backed up. No other copy is made.
-On ChromeOS, a backup of the Linux environment (*Back up Linux*) is a copy of the whole disk
-written to *My files*, so it is taken only when the quarantine holds no audio. The card isn't
-wiped until `urbanbio retrieval status` reports it safe (below).
+else on the host, in particular not in any folder the host syncs to a cloud service or backs
+up. No other copy is made. A host-level backup or snapshot that would include the quarantine is
+taken only when the quarantine holds no audio. The deployment runbooks name each example host's
+synced folders and backup features. The card isn't wiped until `urbanbio retrieval status`
+reports it safe (below).
 
 ## Quarantine Layout
 
 ```
 <paths.quarantine>/
-  incoming/<label>/               # As copied; <label> is any name the maintainer chooses
+  incoming/<label>/               # As copied; <label> is any name the operator chooses
   <retrieval_id>/
     card/                         # The card contents, moved here from incoming/<label>/
     manifest.json                 # Paths, sizes, SHA-256 of every file (no audio content)
@@ -83,7 +81,7 @@ refused.
    - Check the container: the RIFF and `data` chunk sizes declared in the header must match
      the bytes present. A shortfall flags the file `truncated` (typically a copy interrupted
      mid-file, or a recording cut off by battery failure). When the card itself holds the
-     truncated file (power loss), the maintainer waives the check with
+     truncated file (power loss), the operator waives the check with
      `urbanbio runs unflag ingest UNIT --reason truncated --note TEXT`
      ([runs](../../runs/runs-design.md) § Waivers), and the frames present are screened and
      archived like any other file.
@@ -137,7 +135,7 @@ ingested with `--retrieval R`:
 
 - If exactly one copy passes all checks, it is kept. The other is flagged `superseded`, and
   its ledger row records the `audio_file_id` that supersedes it.
-- If both pass, or both fail, both are flagged `filename_conflict` for the maintainer to
+- If both pass, or both fail, both are flagged `filename_conflict` for the operator to
   resolve.
 
 ## Retrieval Health
@@ -171,11 +169,12 @@ Sizing at 48 kHz, 16-bit, mono, 1 minute on / 4 minutes off around the clock:
 | WAV per recorder-day | 1.66 GB |
 | WAV per recorder-week (one weekly card) | 11.6 GB |
 
-The processing machine's disk is shared with the OS, Python dependencies, the uv cache, and
+The processing host's disk is shared with the OS, Python dependencies, the uv cache, and
 model caches. The quarantine and work directories together may use at most
 `quarantine.budget_gb`, and the filesystem must keep `quarantine.min_free_gb` free (both in
-the environment's config file). The reference machine has a 50 GB Linux disk with about 49 GB
-free before the pipeline's dependencies are installed:
+the profile's configuration, overridable in the operator config file). The defaults are sized
+for a host with about 50 GB free before the pipeline's dependencies are installed
+([install](../../install/install-design.md) § Sizing guidance):
 
 | Use | GB |
 |---|---|
@@ -213,7 +212,7 @@ after verification. `urbanbio purge --retrieval R` sweeps up anything left (file
 deleted when all of these hold:
 
 1. The archive ledger shows the unit (`audio_file_id`, mask version 1) `succeeded`, which
-   includes the bit-identity and upload checks
+   includes the bit-identity and store-write checks
    ([archive](../../archive/archive-design.md) § Archive Flow).
 2. The file isn't held for speech labeling.
 3. The file isn't flagged at any stage.
@@ -223,17 +222,25 @@ Two exceptions remove flagged originals:
 - A file flagged `superseded` is deleted once the file that supersedes it has been archived.
 - `urbanbio purge --retrieval R --discard UNIT [--discard UNIT …]` deletes named flagged files
   without archiving them (for example, `outside_deployment` test recordings). The discard and
-  the maintainer's stated `--reason` are recorded in the purge run. Discarded files are never
-  uploaded anywhere.
+  the operator's stated `--reason` are recorded in the purge run. Discarded files are never
+  written to the store or anywhere else.
 
 Device logs and diagnostics are purged once archived. When only `manifest.json` remains, it is
-uploaded to the retrieval's archive prefix and the retrieval directory is deleted.
+written to the retrieval's prefix in the store and the retrieval directory is deleted.
 
 ## Card Wipe Readiness
 
 `urbanbio retrieval status R` reports per-file state and prints **safe to wipe** only when
-every manifest audio file is archived and verified, superseded by an archived copy, or
-discarded by the maintainer. Until then, the card is the backup.
+both hold:
+
+1. every manifest audio file is archived and verified in the store, superseded by an archived
+   copy, or discarded by the operator;
+2. the store is not on the same filesystem as `paths.quarantine`
+   ([store](../../store/store-design.md) § Same-Filesystem Rule). This always holds on the `s3`
+   backend. On the `filesystem` backend, a store on the quarantine's filesystem means wiping the
+   card would leave the archive on the same disk as the working copies.
+
+When either fails, it prints the reason instead. Until then, the card is the backup.
 
 ## Speech-Labeling Hold
 
@@ -250,13 +257,13 @@ purged with them.
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Transfer method | Manual `cp` from the card's mount straight into `incoming/` | Dragging in the host's file manager; staging in the host's own folders first; a sync agent; uploading the card to AWS S3 first | Weekly and manual (Tenet 4). One command that never lands the audio outside the quarantine. Host folders may be synced or backed up, and anything via AWS S3 would put unmasked audio outside the quarantine (G3). |
+| Transfer method | Manual `cp` from the card's mount straight into `incoming/` | Dragging in the host's file manager; staging in the host's own folders first; a sync agent; copying the card to the store first | Weekly and manual (Tenet 4). One command that never lands the audio outside the quarantine. Host folders may be synced or backed up, and anything via the store would put unmasked audio outside the quarantine (G3). |
 | Hash timing | Before any parsing | Hash while parsing | HLD §3.1: the checksum fixes identity before anything touches the file. |
 | DST handling | Use the device's recorded offset; never apply zone rules | Convert filename times with `America/New_York` | Devices that keep a fixed offset would be shifted by an hour across the change if zone rules were applied. |
 | Drift model | Linear between synchronizations, from an operator measurement | Ignore drift; acoustic reference events | Linear is simple and adequate for a crystal clock over a week. Acoustic references are a later refinement. |
-| Disk pressure | A configured budget (35 GB on the reference machine) checked at ingest; cards processed one at a time; date-range parts when a card doesn't fit | A fixed limit of one card on disk; a larger disk | A budget adapts to the machine and lets both weekly cards be copied in one sitting. Processing one at a time keeps peak memory and disk use to one card's worth. |
-| Purge gate | Archive ledger plus bit-identity check | AWS S3 object exists | Existence doesn't prove the archived samples equal the masked original. |
-| Files outside the deployment window | Flag; archive or discard only by maintainer decision | Archive everything on the card | Pre-deployment test recordings are often made indoors near people (Tenet 1). |
+| Disk pressure | A configured budget (default 35 GB) checked at ingest; cards processed one at a time; date-range parts when a card doesn't fit | A fixed limit of one card on disk; a larger disk | A budget adapts to the host and lets both weekly cards be copied in one sitting. Processing one at a time keeps peak memory and disk use to one card's worth. |
+| Purge gate | Archive ledger plus bit-identity check | Store object exists | Existence doesn't prove the archived samples equal the masked original. |
+| Files outside the deployment window | Flag; archive or discard only by operator decision | Archive everything on the card | Pre-deployment test recordings are often made indoors near people (Tenet 1). |
 | Re-copied files | The copy that passes all checks supersedes the other | Keep both; keep the newest | Only one copy of a recording should reach the archive, and "passes the checks" is verifiable where "newest" is not. |
 
 ## Open Questions & Future Decisions
@@ -273,8 +280,6 @@ purged with them.
 ## References
 
 - HLD §3.1, §5.1, §6.1, Tenets 3–4
-- Losing the processing machine and why the card is the backup:
-  [config-cli](../../config-cli/config-cli-design.md) § Losing an environment
+- Losing the processing host and why the card is the backup:
+  [config-cli](../../config-cli/config-cli-design.md) § Losing a host
 - Weekly card procedure: `docs/runbooks/weekly-card.md`
-- ChromeOS, sharing files and removable media with Linux:
-  https://support.google.com/chromebook/answer/9145439

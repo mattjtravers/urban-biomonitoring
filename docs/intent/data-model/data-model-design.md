@@ -17,7 +17,7 @@ Principles:
   or people's names. Exact site coordinates come from private configuration (an environment
   variable; see [config-cli](../config-cli/config-cli-design.md) § Private values) and are reduced to generalized
   coordinates when configuration loads. Positions that recorders write into their own headers
-  and logs are kept only verbatim in the private archive's sidecars and device logs
+  and logs are kept only verbatim in the private store's sidecars and device logs
   ([archive](../archive/archive-design.md)), never parsed into a table.
 - **Append-only records.** Rows are never updated in place. A change, such as a re-mask, adds a
   new versioned row, so earlier runs stay reproducible (HLD G1, Tenet 2).
@@ -30,7 +30,7 @@ Principles:
 
 | Entity | ID field | Format | Derivation |
 |---|---|---|---|
-| Site | `site_id` | `site<N>` (regex `^site[0-9]+$`) | Assigned by the maintainer |
+| Site | `site_id` | `site<N>` (regex `^site[0-9]+$`) | Assigned by the operator |
 | Deployment | `deployment_id` | `<site_id>-dep<NNN>`, e.g. `site1-dep001` | Next sequence number per site |
 | MediaRetrieval | `retrieval_id` | `<deployment_id>-r<NNN>`, e.g. `site1-dep001-r004` | Next sequence number per deployment |
 | AudioFile | `audio_file_id` | `af-<16 hex>` | First 16 hex characters of the original file's SHA-256 |
@@ -174,13 +174,14 @@ One recording. Static facts about the original file. Camtrap DP `media` alignmen
 | `bit_depth` | `int` | no | |
 | `frames` | `int` | no | |
 | `device_temperature_c` | `float` | yes | From header metadata when present |
-| `archive_key` | `str` | no | AWS S3 key of the archived FLAC |
-| `sidecar_key` | `str` | no | AWS S3 key of the header sidecar |
+| `archive_key` | `str` | no | Store key of the archived FLAC |
+| `sidecar_key` | `str` | no | Store key of the header sidecar |
 
-The HLD's storage tier is derived too: the `audio_file_tier` view reports `STANDARD` until
-`glacier_transition_days` after the current mask version's `created_utc`, then `GLACIER_IR`
-(files under 128 KB, such as fully masked minutes, stay `STANDARD`). Lifecycle transitions run
-asynchronously in AWS S3, so the view gives the billed class, which starts on the rule's date.
+On the `s3` backend, the HLD's storage tier is derived too: the `audio_file_tier` view reports
+`STANDARD` until `glacier_transition_days` after the current mask version's `created_utc`, then
+`GLACIER_IR` (files under 128 KB, such as fully masked minutes, stay `STANDARD`). Lifecycle
+transitions run asynchronously in AWS S3, so the view gives the billed class, which starts on
+the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for every file.
 
 A file's processing status is derived from the stage-unit ledger
 ([runs](../runs/runs-design.md)) rather than stored on the record. The `audio_file_status` view
@@ -202,7 +203,7 @@ archive holds only the latest version (see [archive](../archive/archive-design.m
 | `masked_seconds` | `float` | no | Total zeroed duration |
 | `run_id` | `str` | no | FK → Run |
 | `created_utc` | `datetime` | no | |
-| `storage_class` | `str` | no | Storage class at write time, e.g. `STANDARD` |
+| `storage_class` | `str` | no | Storage class at write time: `STANDARD` on `s3`, `FILESYSTEM` on `filesystem` |
 
 ### SpeechEvent
 
@@ -295,7 +296,7 @@ increment the minor version; any other change is a new major version and a new t
 Files are immutable and written once per (run, unit) so writes are idempotent: rewriting the
 same unit produces the same file name.
 
-| Table | Key prefix in AWS S3 | Partitioning (Hive style) | One file per |
+| Table | Key prefix in the store | Partitioning (Hive style) | One file per |
 |---|---|---|---|
 | `sites` | `curated/sites/` | none | config load (overwritten; derived from config) |
 | `deployments` | `curated/deployments/` | none | deployment change (`<deployment_id>-<run_id>.parquet`) |
@@ -321,22 +322,23 @@ example:
 
 ```sql
 CREATE VIEW current_masks AS
-SELECT * FROM read_parquet('s3://<bucket>/curated/audio_mask_versions/**/*.parquet',
+SELECT * FROM read_parquet('<store>/curated/audio_mask_versions/**/*.parquet',
                            hive_partitioning = true)
 QUALIFY row_number() OVER (PARTITION BY audio_file_id ORDER BY mask_version DESC) = 1;
 ```
 
 ## Querying with DuckDB
 
-`urbanbio.storage.tables.connect()` returns a DuckDB connection with the `httpfs` extension
-loaded and an AWS S3 secret created from the environment credential chain (`CREATE SECRET
-(TYPE s3, PROVIDER credential_chain, REGION 'us-east-1')`). It registers one view per table over
-`read_parquet('s3://<bucket>/curated/<table>/**/*.parquet', hive_partitioning = true,
-union_by_name = true)`, so partition columns are queryable and filters on them prune files.
+`urbanbio.storage.tables.connect(store)` returns a DuckDB connection prepared by
+`store.configure_duckdb` ([store](../store/store-design.md) § Store Interface; on `s3`, the
+`httpfs` extension and a secret built from the pipeline's environment credentials). It registers
+one view per table over `read_parquet(store.table_glob('curated/<table>/'), hive_partitioning =
+true, union_by_name = true)`, so partition columns are queryable and filters on them prune
+files. `<store>` in the examples above stands for that glob's root.
 
 Curated tables are small (detections are on the order of 10⁶–10⁷ rows a year, tens to hundreds
-of MB), so reading them from AWS S3 into either environment stays within the monthly free
-egress allowance (see [archive](../archive/archive-design.md) § Cost).
+of MB), so reading them from an `s3` store onto any host stays within the monthly free egress
+allowance (see [archive](../archive/archive-design.md) § Cost).
 
 ## Decisions & Alternatives
 
@@ -346,7 +348,7 @@ egress allowance (see [archive](../archive/archive-design.md) § Cost).
 | Mutability | Append-only rows; re-masks add `AudioMaskVersion` rows | Update AudioFile in place | Earlier detection runs record the mask version they analyzed, so G1 reproducibility holds after a re-mask. |
 | Exact coordinates | Not representable in any persisted model | Store in a "private" column and filter on publish | A field that doesn't exist can't leak through a forgotten publish filter (G3). |
 | Camtrap DP alignment | Mirror deployment fields and media mapping; keep MediaRetrieval as a project entity | Store Camtrap DP tables directly | The audio branch needs fields Camtrap DP lacks (sample rate, schedule). A field mapping lets the image branch export Camtrap DP without the audio branch depending on its schema. |
-| Table layout | Hive-partitioned Parquet, one immutable file per run × unit | A single growing file per table; a DuckDB database file in AWS S3 | Immutable files make writes idempotent and safe to retry, and DuckDB and DuckDB-WASM read them directly. |
+| Table layout | Hive-partitioned Parquet, one immutable file per run × unit | A single growing file per table; a DuckDB database file in the store | Immutable files make writes idempotent and safe to retry, and DuckDB and DuckDB-WASM read them directly. |
 | Detection table key | Partition by `model_id` first | Partition by run | Most queries compare or select a model. Runs within a model are filtered by `run_id`. |
 
 ## Open Questions & Future Decisions

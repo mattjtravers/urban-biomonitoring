@@ -12,9 +12,10 @@ traces to its inputs, code, model, and parameters (G1). Every stage is also **id
 re-running on the same inputs with the same parameters and versions does no work (HLD §2
 "Idempotency").
 
-The design keeps one rule: **the outputs in AWS S3 are the ledger.** A stage skips a unit only
-when AWS S3 shows that unit completed under the same idempotency key. Local disk holds no
-authoritative state, so a lost or rebuilt machine loses nothing but caches and working copies.
+The design keeps one rule: **the outputs in the store are the ledger.** A stage skips a unit
+only when the store ([store](../store/store-design.md)) shows that unit completed under the
+same idempotency key. Local disk holds no authoritative state, so a lost or rebuilt host loses
+nothing but caches and working copies.
 
 Package: `urbanbio.provenance`.
 
@@ -73,7 +74,7 @@ per unit attempt:
 | `reason_code` | `str` | yes | For `flagged` and `failed` |
 | `waived_reason_codes` | `list[str]` | no | Checks waived for this attempt; usually empty |
 | `related_unit_id` | `str` | yes | E.g. the superseding file for `superseded` |
-| `output_refs` | `list[str]` | no | AWS S3 keys or table/file references |
+| `output_refs` | `list[str]` | no | Store keys or table/file references |
 | `finished_utc` | `datetime` | no | |
 
 The two non-success statuses mean different things:
@@ -82,7 +83,7 @@ The two non-success statuses mean different things:
   after retries, a decode error). The next run retries the unit automatically.
 - **`flagged`**: a check found something that needs a human decision (`truncated`,
   `outside_deployment`, `timestamp_mismatch`, `archive_conflict`, …). The unit is not retried
-  until the maintainer waives the check (Tenet 3).
+  until the operator waives the check (Tenet 3).
 
 ## Lookups
 
@@ -106,19 +107,19 @@ raise the waived code records it as a warning and continues, and the unit's ledg
 and reason code, not by idempotency key, so they keep applying after stage-version or parameter
 changes. They are never removed.
 
-Waivers are for checks whose condition the maintainer has confirmed is acceptable (for example,
+Waivers are for checks whose condition the operator has confirmed is acceptable (for example,
 a recording genuinely cut short by battery failure). Privacy checks can't be waived:
 `PrivacyError` is never a unit-level flag
 ([config-cli](../config-cli/config-cli-design.md) § Errors).
 
-The ledger is flushed to AWS S3 in batches (every 50 units and at the end of the run) as
+The ledger is flushed to the store in batches (every 50 units and at the end of the run) as
 immutable part files `curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`. If a run
 crashes, the units completed before the last flush stay recorded, and the next run repeats at
 most one batch.
 
 ## Run Record
 
-Written to `runs/<run_id>.json` (full record) at the start of the run with status `running`,
+Written to the store at `runs/<run_id>.json` (full record) at the start of the run with status `running`,
 and rewritten at the end. Its summary row goes to the `runs` table.
 
 | Field | Type | Notes |
@@ -128,7 +129,8 @@ and rewritten at the end. Its summary row goes to the `runs` table.
 | `status` | `Literal["running", "succeeded", "partial", "failed"]` | `partial` when any unit was flagged or failed |
 | `started_utc`, `ended_utc` | `datetime` | |
 | `code` | object | `package_version`, `git_commit`, `git_dirty: bool`, `stage_version` |
-| `environment` | object | `URBANBIO_ENV`, Python version, platform, versions of `birdnet`, `silero-vad`, `torch`, `soundfile`, libsndfile, `pyarrow`, `duckdb`, `boto3` |
+| `store` | object | `backend` and `store_id` from the store marker ([store](../store/store-design.md) § Store Marker); never the bucket name or root path |
+| `environment` | object | `URBANBIO_PROFILE`, Python version, platform, versions of `birdnet`, `silero-vad`, `torch`, `soundfile`, libsndfile, `pyarrow`, `duckdb`, `boto3` |
 | `models` | list | `model_id`, `version`, `backend`, `precision`, `file_sha256` |
 | `params` | object | Stage parameters (public-safe; see below) |
 | `params_hash` | `str` | |
@@ -140,11 +142,11 @@ and rewritten at the end. Its summary row goes to the `runs` table.
 | `log_key` | `str` | `runs/<run_id>.log` |
 
 A run started with uncommitted changes in the working tree records `git_dirty: true`. In
-`dev`, such runs are allowed. In `processing`, every command that creates a run refuses to start
-with uncommitted changes (a `ConfigError`, exit `3`), so the processing machine runs only code
-that is committed and has been through CI. `--allow-dirty` overrides the refusal for one
+the `dev` profile, such runs are allowed. In the `processing` profile, every command that creates
+a run refuses to start with uncommitted changes (a `ConfigError`, exit `3`), so real media is
+processed only by code that is committed and has been through CI. `--allow-dirty` overrides the refusal for one
 command, and the run still records `git_dirty: true`. Publish refuses to use outputs from dirty
-runs in either environment ([publish](../publish/publish-design.md)).
+runs in any profile ([publish](../publish/publish-design.md)).
 
 **Public-safe parameters.** Run parameters may contain generalized coordinates but never exact
 ones. The configuration layer never exposes exact coordinates to stages
@@ -160,15 +162,17 @@ removed only with `--force-unlock`.
 
 ## Resource Limits
 
-The processing machine has little memory and no swap (the reference machine has 6.4 GB for
-Linux; [environments](../environments/environments-design.md) § Reference machine). When it
-runs out, the kernel kills a process. So the stages that process audio bound their memory
-explicitly:
+A processing host may have little memory and no swap. When memory runs out, the kernel kills a
+process. So the stages that process audio bound their memory explicitly, from configuration
+rather than from what they can detect about the host (HLD Tenet 5):
 
 - **Worker count.** `screen`, `archive`, and `detect` run at most `resources.workers`
-  workers, from the environment's config file. The default is 2 on the processing machine
-  and 1 in development. The value must be between 1 and the CPU count; anything else is a
-  `ConfigError`. Each stage LLD says what a worker is for that stage.
+  workers, from the profile's configuration
+  ([config-cli](../config-cli/config-cli-design.md) § Configuration). The default is 2 in the
+  `processing` profile, sized for a host with 8 GB of RAM
+  ([install](../install/install-design.md) § Sizing guidance), and 1 in `dev`. The value must
+  be at least 1; anything else is a `ConfigError`. `config check` warns, without failing, when
+  it exceeds the CPU count the host reports. Each stage LLD says what a worker is for that stage.
 - **One file at a time per worker.** A worker holds the samples of one audio file, and that
   file's outputs, and releases them before taking the next. No stage loads a batch, a day, or
   a retrieval of audio into memory at once. Models are loaded once per worker.
@@ -185,34 +189,32 @@ peak memory and wall-clock time per stage for one card at the default worker cou
 whether 3 or 4 workers stay within memory with a margin of at least 1 GB. Raise the default
 only on that evidence.
 
-## Long Runs on the Processing Machine
+## Long and Interrupted Runs
 
-Processing one weekly card takes hours. The processing machine's Linux environment suspends
-when the host sleeps, and closing the terminal window ends the processes started in it. The
-weekly card runbook therefore:
+Processing one weekly card takes hours. During that time the host may suspend, lose power, or
+lose the terminal that started the command. Keeping the host awake and the command attached to a
+session that outlives its terminal are operator concerns, covered in the deployment runbooks.
+The software's part is to make every interruption safe:
 
-- keeps the machine plugged in and awake for the whole run (power settings: don't sleep while
-  plugged in, and don't sleep when the lid is closed);
-- starts `urbanbio process` inside `tmux`, so closing or losing the terminal window doesn't
-  stop it.
-
-A suspend pauses the run without losing work. AWS S3 requests in flight when the machine
-sleeps fail on wake and are retried (botocore `standard` retries), and a unit that still fails
-is retried by the next run. The ledger makes any interrupted run safe to restart: the same
-command resumes and skips completed units. Time spent suspended is counted in
-`wall_clock_s`, so the first-card measurement is taken with the machine awake throughout.
+- A suspend pauses the run without losing work. Store requests in flight when the host sleeps
+  fail on wake and are retried by the backend, and a unit that still fails is marked `failed`
+  and retried by the next run.
+- Any interrupted run is safe to restart: the same command resumes, and the ledger skips
+  completed units. A stale lock left by a killed main process is cleared with `--force-unlock`
+  (§ Concurrency).
+- Time spent suspended is counted in `wall_clock_s`, so resource measurements are taken with the
+  host awake throughout.
 
 ## Decisions & Alternatives
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Source of truth for "done" | Ledger rows in AWS S3 | Local SQLite state; checking output object existence only | AWS S3 is the system of record (HLD §2), so state survives the loss of either environment. Object existence alone can't tell whether parameters changed. |
+| Source of truth for "done" | Ledger rows in the store | Local SQLite state; checking output object existence only | The store is the system of record (HLD §2), so state survives the loss of any host. Object existence alone can't tell whether parameters changed. |
 | What invalidates a unit | `stage_version`, params, inputs, models | git commit | Keying on the commit would reprocess the archive after every refactor, at real egress cost. A deliberate `stage_version` bump makes reprocessing a visible decision. |
 | Run IDs | Time-based with random suffix | Deterministic from the idempotency key | A run is an execution event; two executions are two runs even when one skips everything. Determinism lives in unit keys. |
 | Ledger write pattern | Batched immutable part files | One row per unit as separate objects; rewriting one file | Per-unit objects multiply request costs. Rewriting a shared file risks losing it on a crash. |
 | Flagged units | Stay skipped until explicitly cleared | Retry automatically on the next run | Tenet 3: a unit that failed verification needs a human decision, not silent retries. |
-| Memory bounding | Configured worker count, one file per worker | Workers equal to the CPU count; a memory-aware scheduler; adding swap | With no swap, the CPU count (8) would risk the kernel killing the run. A scheduler is complex for one machine. Swap is deferred until measured ([environments](../environments/environments-design.md) § Deferred). |
-| Surviving a closed terminal | `tmux` | `nohup`; a systemd user service | `tmux` lets the maintainer reattach and watch progress. A service is setup for a weekly manual step (Tenet 4). |
+| Memory bounding | Configured worker count with a conservative default, one file per worker | Workers equal to the detected CPU count; a memory-aware scheduler | On a small host without swap, one worker per core can exhaust memory and get the run killed. A scheduler is complex for one host. A configured count is predictable and follows Tenet 5. |
 
 ## Open Questions & Future Decisions
 
@@ -222,5 +224,5 @@ command resumes and skips completed units. Time spent suspended is counted in
 
 ## References
 
-- HLD §2 (idempotency, provenance), §1.4 Tenets 2–3
+- HLD §2 (idempotency, provenance), §1.4 Tenets 2, 3, and 5
 - Weekly card procedure: `docs/runbooks/weekly-card.md`

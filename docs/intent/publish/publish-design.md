@@ -10,8 +10,8 @@ prefix: PUB
 Publish is the only stage whose output is public (HLD §3.6). Everything it emits goes through
 an allowlist: columns, files, and clips are published only when explicitly selected, so
 anything added to the private tables stays private unless someone deliberately adds it here.
-Public material is served from GitHub Pages only. The AWS S3 bucket stays private
-([archive](../archive/archive-design.md)).
+Public material is served from GitHub Pages only. The store stays private
+([store](../store/store-design.md)).
 
 **Phase 1 scope: interfaces and policy only.** PUB specs are deferred until curate produces
 summaries.
@@ -80,7 +80,7 @@ CC BY-NC-SA 4.0 license places no conditions on published detection data. If it 
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Hosting | GitHub Pages | Public AWS S3 prefix | No public bucket surface; no egress charges for downloads. |
+| Hosting | GitHub Pages | A public store prefix | No public store surface; no egress charges for downloads. |
 | Output control | Allowlist | Denylist of private columns | A new private column is private by default. |
 | Clip check | Stricter second screen; reject on any hit | Reuse archive screen results | HLD §3.6 requires a second check. Clips are short and public, so false rejections are cheap. |
 

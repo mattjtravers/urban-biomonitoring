@@ -1,6 +1,6 @@
 # urban-biomonitoring — High-Level Design
 
-**Status:** Approved baseline v1.5 (2026-10-05). Changes go through review.
+**Status:** Approved baseline v1.6 (2026-10-05). Changes go through review.
 **Process:** Linked-Intent Development. This HLD → low-level design → EARS requirements → tests → code.
 **Scope of this document:** the software system: architecture, components, data, storage,
 privacy controls, and extension points. Field protocols, site details, and project planning
@@ -55,7 +55,10 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
    unparseable metadata, an ambiguous timestamp), it stops and flags the affected input instead
    of continuing on a best guess.
 4. **A documented manual step beats automation for rare operations.** Weekly media transfer and
-   one-time cloud setup are runbook steps, not automated infrastructure.
+   one-time storage setup are runbook steps, not automated infrastructure.
+5. **Configuration over detection.** The software acts on its configuration and environment
+   variables, never on what it can infer about the host it runs on. When behavior must differ
+   between deployments, it differs through a configured value with a documented default.
 
 ## 2. Architecture overview
 
@@ -64,19 +67,25 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
                       adapters       mask speech           detector       sample, label    tables,        static site,
                       metadata       archive masked audio  all scores     calibrate        joins          DwC-A export
                          │                  │                  │               │               │
-                         └──────────────────┴────── AWS S3 (system of record) ─┴───────────────┘
+                         └──────────────────┴──── Store (system of record) ────┴───────────────┘
+                                                  AWS S3 by default; pluggable (§5.5)
 ```
 
-- **Execution model:** a Python CLI, run stage by stage or end to end. No servers. There are
-  two environments:
-  - The **processing machine** handles all real media. It is a local Linux machine the
-    maintainer controls, running the CLI directly with uv and no container, and it reads
-    recorder media through its own card reader. The current machine is described in the
-    local processing setup runbook.
-  - The **development environment** is the project's Codespaces dev container. It runs tests
-    and builds against synthetic or public-domain audio and never holds real field audio.
-- **System of record:** AWS S3. The processing machine's local disk holds only working copies
-  and the quarantine (§5.1); losing that machine loses nothing authoritative.
+- **Execution model:** a Python CLI, run stage by stage or end to end, on any host that meets
+  the prerequisites (§8). No servers. Behavior is selected by a **configuration profile** named
+  by the `URBANBIO_PROFILE` environment variable:
+  - **`processing`** handles real recorder media. The host running it (the **processing host**)
+    holds the quarantine (§5.1) on its local disk and reads recorder media from a local path.
+  - **`dev`** runs tests and builds against synthetic sites and synthetic or public-domain
+    audio. It refuses production data locations and the commands that read real media or
+    write to the archive.
+
+  Nothing in the software depends on which host runs a profile (Tenet 5). An operator's
+  concrete hosts, and how private values reach them, are described in runbooks as example
+  deployments.
+- **System of record:** the configured **store** (§5.5), AWS S3 by default. The processing
+  host's local disk holds only working copies and the quarantine (§5.1); losing that host loses
+  nothing authoritative. Keeping the store durable is the operator's responsibility.
 - **Idempotency:** every stage is keyed by content checksums and run IDs. Re-running a stage
   on the same inputs is a no-op unless parameters or versions change.
 - **Provenance:** every stage writes a run record (inputs, outputs, code commit, model and
@@ -105,8 +114,8 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
   and timing stay unchanged, so all offsets remain valid.
 - Writes a speech-event log (file, offsets, detector, score) with no audio content.
 - Only masked audio leaves quarantine. The archive step encodes masked audio as FLAC, writes the
-  header sidecar, uploads both to AWS S3, and verifies fidelity before the original is purged
-  from the quarantine (§5.2).
+  header sidecar, writes both to the store, and verifies fidelity in the store before the
+  original is purged from the quarantine (§5.2).
 
 ### 3.3 Detect
 
@@ -159,7 +168,7 @@ Field-level schemas are defined in the LLD as Pydantic models.
 | Site | Stable location. Exact coordinates are private; generalized coordinates are published. |
 | Deployment | One recorder at one site for a continuous period: device model and serial, firmware, recording configuration, mounting notes. Modeled after Camtrap DP deployments for reuse by the image branch. |
 | MediaRetrieval | One media pull within a deployment: time span, file count, checksums, battery status, anomalies. |
-| AudioFile | One recording: UTC start, duration, sample rate, original and masked checksums, and storage location. Its current storage tier is derived from file age and the lifecycle rule. |
+| AudioFile | One recording: UTC start, duration, sample rate, original and masked checksums, and store-relative location. On the `s3` backend, its current storage tier is derived from file age and the lifecycle rule. |
 | SpeechEvent | One masked segment: file, offsets, detector, score. No audio. |
 | Detection | File, offsets, taxon (scientific + common name), confidence, model and version, run ID. |
 | Label | A reviewer's verdict on a detection. |
@@ -183,20 +192,19 @@ keeping GBIF publication possible.
 
 | Zone | Location | Contents | Retention |
 |------|----------|----------|-----------|
-| Quarantine | Processing machine's local disk only, at a configured path outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
-| Archive | AWS S3 | Speech-masked originals (lossless FLAC) + verbatim header sidecars | Indefinite; lifecycle-transitioned to a Glacier tier after a configurable age |
-| Curated | AWS S3 | Parquet tables, calibrations, labels, run records | Indefinite, Standard tier |
-| Clips | AWS S3 | Short masked detection clips for review and dashboard | Indefinite, Standard tier; withdrawn when a re-mask covers them |
+| Quarantine | Processing host's local disk only, at the configured `paths.quarantine`, outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and archival in the store are verified |
+| Archive | Store | Speech-masked originals (lossless FLAC) + verbatim header sidecars | Indefinite; on the `s3` backend, lifecycle-transitioned to a Glacier tier after a configurable age |
+| Curated | Store | Parquet tables, calibrations, labels, run records | Indefinite |
+| Clips | Store | Short masked detection clips for review and dashboard | Indefinite; withdrawn when a re-mask covers them |
 | Published | GitHub Pages | Dashboard, public Parquet, DwC-A, approved clips | Versioned releases |
 
-The quarantine is on the processing machine's local disk, at a path set in that environment's
-configuration, and outside the repository working tree so no git operation can stage its
-contents. The directory has mode `0700`, every intake path is resolved and checked against it,
+The quarantine is on the processing host's local disk, at a configured path outside the
+repository working tree so no git operation can stage its contents. The directory has mode `0700`, every intake path is resolved and checked against it,
 and originals are purged only after archival is verified. Its capacity is bounded by a
 configured disk budget, so ingest processes media in batches that fit (sized in the LLD).
 
-All AWS S3 storage is private: buckets block public access, and only the project's own IAM
-principals can read or write them. Public material is served only from GitHub Pages.
+The store is private on every backend: nothing in it is served publicly, and only principals
+the operator authorizes can read or write it. Public material is served only from GitHub Pages.
 
 ### 5.2 Archive fidelity
 
@@ -217,22 +225,49 @@ re-run from it.
 
 ### 5.3 Layout (indicative)
 
+Keys are relative to the store root (`s3://<bucket>/` on the `s3` backend, the configured root
+directory on the `filesystem` backend) and identical on every backend:
+
 ```
-s3://<bucket>/archive/site=<site_id>/deployment=<dep_id>/date=<YYYY-MM-DD>/<file>.flac
-s3://<bucket>/archive/.../<file>.header.json
-s3://<bucket>/curated/<table>/...parquet
-s3://<bucket>/retrievals/site=<site_id>/deployment=<dep_id>/<retrieval_id>/...   (device logs, manifest)
-s3://<bucket>/clips/<detection_id>.flac
-s3://<bucket>/runs/<run_id>.json
-s3://<bucket>/runs/<run_id>.log
+archive/site=<site_id>/deployment=<dep_id>/date=<YYYY-MM-DD>/<file>.flac
+archive/.../<file>.header.json
+curated/<table>/...parquet
+retrievals/site=<site_id>/deployment=<dep_id>/<retrieval_id>/...   (device logs, manifest)
+clips/<detection_id>.flac
+runs/<run_id>.json
+runs/<run_id>.log
+.urbanbio-store.json                                               (store marker, §5.5)
 ```
 
 ### 5.4 Cost controls
 
-Lossless compression, lifecycle transition of archived audio to a Glacier tier, local compute,
-a static dashboard, and an AWS Budgets alert. The specific tier and transition age are chosen
-in the LLD against current AWS pricing (retrieval latency vs. cost, minimum storage
-durations).
+Lossless compression, compute on the operator's own host, and a static dashboard on every
+backend. On the `s3` backend, also lifecycle transition of archived audio to a Glacier tier and
+an AWS Budgets alert; the specific tier and transition age are chosen in the LLD against
+current AWS pricing (retrieval latency vs. cost, minimum storage durations).
+
+### 5.5 Store backends
+
+Stages never address storage directly. They read and write through a **store interface**
+(put with integrity verification, get, head for an object's metadata, list, and delete, which
+is permitted only under `clips/`), and the backend is chosen by the `[store]` table of the
+profile's configuration (§8). A new backend implements the interface and changes no stage. One contract test suite runs
+against every backend.
+
+| Backend | Store root | Integrity and protection | Notes |
+|---|---|---|---|
+| `s3` (default) | A private AWS S3 bucket, named by `URBANBIO_BUCKET` | Checksum-verified writes confirmed by a metadata read; an IAM policy that denies the pipeline deletes outside `clips/` | Glacier lifecycle tiering, budget alerts. Accessed through the AWS API, not a filesystem mount. |
+| `filesystem` | A configured directory on any mounted filesystem (a lab NFS or SMB share, an external disk, or a FUSE mount of object storage) | Write to a temporary name, fsync, atomic rename, read-back verification; archive files written read-only | No tiering; durability and access control come from the filesystem the operator provides. |
+
+**Store marker.** `urbanbio store init` writes `.urbanbio-store.json` at the store root,
+recording the profile the store belongs to. Every command that touches the store first reads
+the marker and refuses to run when it is missing (for example, an unmounted share leaves an
+empty directory) or names a different profile. This is how the `dev` profile refuses
+production data on any backend.
+
+Volume, for sizing a store: about 7 GB of masked FLAC per recorder-week (an estimate until the
+first real card is measured), so about 730 GB per year for two recorders. Detailed sizing and
+cost are in the archive LLD.
 
 ## 6. Privacy controls
 
@@ -241,18 +276,20 @@ durations).
 - Two-detector screening with padding (§3.2), measured against a hand-labeled sample for
   speech recall.
 - Unmasked audio never leaves the quarantine. Because the quarantine is on the processing
-  machine's local disk, unmasked audio never leaves that machine: it is never committed, never
-  written to AWS S3, and never copied elsewhere, including to the development environment.
-  Listening to held originals for speech labeling happens only on the processing machine. The
-  recorder's media is wiped and reused only after archival is verified.
+  host's local disk, unmasked audio never leaves that host: it is never committed, never written
+  to the store, and never copied to another host or to a folder that the host syncs or backs up.
+  Listening to held originals for speech labeling happens only on the processing host.
+- The recorder's media is wiped and reused only after archival is verified in the store. On the
+  `filesystem` backend, the store must also be on a different filesystem from the quarantine,
+  so wiping the card never leaves the archive on the same disk as the working copies.
 - Published clips get a second speech check.
 
 ### 6.2 Location
 
-- Exact site coordinates live in private configuration supplied as an environment variable
-  from a source outside the repository (§8), never in a file in the repository. They never appear in tables, run records, or logs. Positions that
-  recorders write into their own file headers and logs survive only in the private archive
-  (header sidecars and device logs), which is never published.
+- Exact site coordinates live in private configuration read from an environment variable
+  (§8), never from a file in the repository. They never appear in tables, run records, or logs.
+  Positions that recorders write into their own file headers and logs survive only in the
+  private store (header sidecars and device logs), which is never published.
 - Published coordinates are generalized (e.g., rounded to 0.01°, ~1 km), with the
   generalization declared in Darwin Core fields.
 - Public site identifiers are opaque (`site1`, `site2`, …).
@@ -276,23 +313,37 @@ durations).
 
 ## 8. Engineering standards
 
-- Python with uv, Pydantic data contracts, pytest, GitHub Actions CI, a Codespaces dev
-  container for development, `CLAUDE.md` for agent guidance, design docs in `docs/`, MIT
-  license.
-- Configuration is declarative: committed stage parameters shared by every environment, plus
-  one committed public file per environment (processing machine, development) for paths,
-  resources, and disk budget, selected by the environment. Secrets and private values
-  (`URBANBIO_SITES`, `URBANBIO_BUCKET`, AWS credentials) come only from environment variables in
-  every environment: from Codespaces secrets in the development environment, and on the
-  processing machine from a mode-`0600` env file outside the repository that the shell loads
-  at startup. `urbanbio config check` verifies the source in each environment.
-- **Reproducible processing machine:** the processing machine can be rebuilt from the
-  repository alone. A committed, idempotent setup script installs system packages, uv, and
-  locked dependencies, and creates the local directories and an empty secrets file; a runbook
-  covers the steps a script can't do. Both environments read one committed system-package
-  list and the pinned Python and uv versions, so they can't drift apart, and CI runs the setup
-  script in a clean Debian container so it can't break unnoticed. Each processing run starts
-  from the code and lockfile CI tested (`git pull && uv sync`).
+- Python with uv, Pydantic data contracts, pytest, GitHub Actions CI, an optional dev container
+  definition, `CLAUDE.md` for agent guidance, design docs in `docs/`, MIT license.
+- **Prerequisites:** Linux on x86_64 (tested on Debian 13 and Ubuntu 24.04 LTS; other
+  distributions best-effort); the Python and uv versions pinned in the repository; the system
+  packages listed in `scripts/system-packages.txt`; and a store, which by default means an AWS
+  account with S3 access. As guidance, a processing host needs at least 8 GB of RAM for the
+  default worker count and, per recorder-week processed at once, about 12 GB of working disk
+  beyond about 10 GB for dependencies, models, and free-space margin. The README and the install
+  LLD carry the full list.
+- **Configuration** is declarative, in three layers:
+  1. committed stage parameters (`config/pipeline.toml`), identical in every profile so a result
+     never depends on where it was computed (G1);
+  2. one committed file per profile (`config/<profile>.toml`) with documented defaults for
+     paths, worker count, disk budget, and the store backend, sized for the minimum host above;
+  3. an optional operator file outside the repository working tree, named by `URBANBIO_CONFIG`,
+     which may override only those deployment tables.
+
+  Private values (`URBANBIO_SITES`; `URBANBIO_BUCKET` and the AWS credentials on the `s3`
+  backend) are read only from environment variables. How they reach the environment (an env
+  file, a secrets manager, a hosted-development secret store) is an operator concern documented
+  in runbooks. The `dev` profile uses committed synthetic sites and refuses a set
+  `URBANBIO_SITES`. `urbanbio config check` enforces the host-independent safety rules:
+  configured paths lie outside the repository working tree, the quarantine, work, and state
+  directories have mode `0700`, the store marker matches the profile, and private values are
+  never printed.
+- **Reproducible install:** a host can be set up from the repository alone. A committed,
+  idempotent installer for Debian and Ubuntu hosts installs the listed system packages, the
+  pinned uv, and locked dependencies, and creates the configured data directories. It does not
+  create secret stores or edit shell startup files. CI runs it on standard Debian and Ubuntu
+  images, so it can't break unnoticed. The dev container reads the same package list and pins.
+  Each processing run starts from the code and lockfile CI tested.
 - **Licensing:** BirdNET models carry their own non-commercial license (CC BY-NC-SA 4.0), so
   they are downloaded by the `birdnet` library at runtime and never vendored. Published data
   license is decided before the first release.
@@ -307,15 +358,17 @@ durations).
 | Vendor metadata lost in format conversion | Verbatim header sidecars, checksums of originals |
 | Model updates change results | Model version in every detection; runs never overwrite |
 | Storage cost creep | Lifecycle tiering, compression, budget alerts |
-| Processing machine sleeps or loses power mid-run | Idempotent, resumable stages (ledger in AWS S3); runbook keeps the machine awake and plugged in; the card is the backup until safe to wipe |
-| Memory exhaustion on a small processing machine | Configurable worker count with a conservative default; audio stages stream one file per worker; peak memory measured on the first card |
-| Processing machine can't be rebuilt | Setup script and runbook in the repo; CI runs the script in a clean Debian container |
+| Processing host sleeps or loses power mid-run | Idempotent, resumable stages (ledger in the store); the card is the backup until safe to wipe |
+| Memory exhaustion on a small processing host | Configurable worker count with a documented, conservative default and RAM guidance; audio stages stream one file per worker; peak memory recorded in every run |
+| Processing host can't be rebuilt | Installer in the repo, tested in CI on standard images; nothing authoritative on the host |
+| Store unavailable or unmounted | Store marker checked before any store access; commands refuse to run rather than write to an empty mount point |
+| Archive lost on a `filesystem` store | Operator-provided durability; card wipe requires the store on a different filesystem from the quarantine |
 
 ## 10. Technical decisions
 
 | ID | Decision | Resolution | Details |
 |----|----------|------------|---------|
-| T1 | Glacier tier and transition age for archived audio | S3 Glacier Instant Retrieval after 30 days | `docs/intent/archive/` § Cost |
+| T1 | Glacier tier and transition age for archived audio (`s3` backend) | S3 Glacier Instant Retrieval after 30 days | `docs/intent/archive/` § Cost |
 | T2 | Stored detection confidence floor | 0.10 | `docs/intent/detect/` |
 | T3 | Labeling tool | Evaluate Whombat first, then Label Studio; a minimal local UI only if both fail | `docs/intent/validate/` |
 | T4 | Published coordinate precision | 0.01°, declared as `coordinateUncertaintyInMeters` = 1000; per-site overrides may only be coarser | `docs/intent/publish/` |

@@ -23,7 +23,7 @@ Ingest has two parts, each a child LLD:
   **[songmeter-micro2](songmeter-micro2/songmeter-micro2-design.md)** (`INGEST-SM2`).
   AudioMoth will be a sibling folder.
 
-Intake calls the adapter. The adapter never touches AWS S3, the ledger, or other files.
+Intake calls the adapter. The adapter never touches the store, the ledger, or other files.
 
 ## Recorder Adapter Interface
 

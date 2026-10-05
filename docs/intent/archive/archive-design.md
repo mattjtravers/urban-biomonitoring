@@ -3,26 +3,28 @@ parent: high-level-design
 prefix: ARCH
 ---
 
-# Archive and AWS S3 Storage
+# Archive
 
 ## Context and Design Philosophy
 
 The archive is the pipeline's reprocessing source (HLD §5.2): every stage after the speech
 screen can be re-run from it. It holds speech-masked audio as lossless FLAC, the verbatim
-device header of every file, and the device logs, in one private AWS S3 bucket that is the
-system of record (HLD §2, §5.1).
+device header of every file, and the device logs, in the store, the system of record
+(HLD §2, §5.1, §5.5; [store](../store/store-design.md)).
 
 Three properties are non-negotiable:
 
 1. **Fidelity.** Every sample outside the mask is bit-identical to the original, and that is
    checked before the original is deleted, not assumed.
-2. **Only masked audio leaves the quarantine.** The upload API accepts only `MaskedAudio`
+2. **Only masked audio leaves the quarantine.** The archive write API accepts only `MaskedAudio`
    ([speech-screen](../speech-screen/speech-screen-design.md) § Padding, Merging, and the
    Mask).
-3. **Private storage.** The bucket blocks all public access. Nothing in it is ever made public.
-   Published material is served from GitHub Pages ([publish](../publish/publish-design.md)).
+3. **Private storage.** Nothing in the store is ever made public. Published material is served
+   from GitHub Pages ([publish](../publish/publish-design.md)).
 
-Package: `urbanbio.storage` (`archive.py`, `flac.py`, `sidecar.py`, `s3.py`, `paths.py`).
+Package: `urbanbio.storage` (`archive.py`, `flac.py`, `sidecar.py`). The archive reads and
+writes only through the store interface and builds keys only with `urbanbio.storage.paths`
+([store](../store/store-design.md)).
 
 ## Archive Flow (per audio file)
 
@@ -41,22 +43,19 @@ Package: `urbanbio.storage` (`archive.py`, `flac.py`, `sidecar.py`, `s3.py`, `pa
    are zero wherever it is true. Compute `masked_sha256` (FLAC bytes) and `masked_pcm_sha256`
    (decoded samples).
 5. **Build the sidecar** (below) from the adapter's `header_chunks`.
-6. **Check for an earlier upload.** `HeadObject` the target key. If an object exists with the
+6. **Check for an earlier write.** `store.head` the target key. If an object exists with the
    same `mask-version` metadata:
-   - same `masked-pcm-sha256`: the upload already happened (for example, the run crashed
-     before its ledger flush). Skip the PUT and continue at step 7 with the existing object's
+   - same `masked-pcm-sha256`: the write already happened (for example, the run crashed
+     before its ledger flush). Skip the write and continue at step 8 with the existing object's
      checksum. Identical samples count as identical even when FLAC bytes differ (for example,
      after a libsndfile upgrade).
    - different `masked-pcm-sha256`: raise `IntegrityError` (`archive_conflict`) and flag. An
      archived version is never overwritten except by a higher `mask_version`.
-
-   **Upload** the FLAC and then the sidecar with `PutObject`, each with `ChecksumAlgorithm =
-   SHA256` and the precomputed `ChecksumSHA256`, so AWS S3 rejects a corrupted upload. Every
-   object is a single PUT (audio files are a few MB, well under the 5 GB single-PUT limit).
-   Object metadata: `audio-file-id`, `mask-version`, `masked-sha256`, `masked-pcm-sha256`,
-   `original-sha256`.
-7. **Confirm** with `HeadObject(ChecksumMode="ENABLED")`: the returned SHA-256 checksum and
-   length must match.
+7. **Write** the FLAC and then the sidecar with `store.put`, passing the precomputed SHA-256,
+   `overwrite=False`, and the metadata `audio-file-id`, `mask-version`, `masked-sha256`,
+   `masked-pcm-sha256`, `original-sha256`. `put` returns only after the store has confirmed the
+   object's length and full SHA-256 ([store](../store/store-design.md) § Store Interface), so a
+   returned `put` is the proof that the archived bytes are the verified FLAC.
 8. **Record** an AudioMaskVersion row and a `succeeded` ledger unit (unit ID
    `audio_file_id` + mask version). Only this row allows purge
    ([intake](../ingest/intake/intake-design.md) § Purge).
@@ -75,10 +74,11 @@ place.
 The work-directory FLAC is kept until the detect stage has processed that file, so detect
 needn't download it. Detect then deletes it.
 
-**Device files.** The summary log, diagnostics, and unknown files from the card are uploaded
-verbatim under the retrieval prefix (below), after a content check: any file whose header
+**Device files.** The summary log, diagnostics, and unknown files from the card are written
+verbatim to the store under the retrieval prefix ([store](../store/store-design.md) § Key
+Layout), after a content check: any file whose header
 identifies it as audio (RIFF/WAVE, FLAC, Ogg, MP3) and wasn't processed as an audio file is
-flagged `unexpected_audio` and **not uploaded**.
+flagged `unexpected_audio` and **not written to the store**.
 
 ## Header Sidecar
 
@@ -116,118 +116,27 @@ mask version:
 
 - The new FLAC (built by `remask`, see
   [speech-screen](../speech-screen/speech-screen-design.md) § Re-screening and Re-masking) goes
-  through steps 3–8 with `mask_version + 1` and **overwrites** the object at the same key. The
-  sidecar is unchanged, and there's no original to purge.
-- The bucket has versioning disabled, so the previous masked version, which contains speech the
-  new mask removes, no longer exists anywhere (Tenet 1).
+  through steps 3–8 with `mask_version + 1` and is written with `overwrite=True` to the same
+  key. The sidecar is unchanged, and there's no original to purge.
+- The previous masked version contains speech the new mask removes, so the store keeps no copy
+  of it (Tenet 1). On `s3`, bucket versioning is disabled; on `filesystem`, the new file
+  replaces the old one by rename ([store](../store/store-design.md)). Copies outside the store's
+  control, such as snapshots or backups an operator takes of a `filesystem` store, can retain the
+  previous version; the filesystem-backend runbook tells operators to expire them after a
+  re-mask.
 - A new AudioMaskVersion row records the version, checksums, events, and run.
 
-## AWS S3 Layout
+## Keys
 
-One private bucket in `us-east-1`. Its name comes from `URBANBIO_BUCKET`. All keys are built by
-`urbanbio.storage.paths`; no other code formats keys.
+Archive objects live under `archive/` and device files under `retrievals/`, in the layout
+defined by [store](../store/store-design.md) § Key Layout. On the `s3` backend, bucket
+configuration, the lifecycle rule that applies the T1 tier, and the pipeline's IAM policy are in
+[store](../store/store-design.md) § `s3` Backend.
 
-```
-archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.flac
-archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.header.json
-retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/manifest.json
-retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/device/<original filename>
-curated/<table>/<partitions>/<file>.parquet
-clips/<detection_id>.flac
-runs/<run_id>.json
-runs/<run_id>.log
-```
+## Cost (`s3` backend)
 
-`date` is the UTC date of the file start. Filenames are opaque IDs, so recorder names don't
-appear in archive keys.
-
-## Bucket Configuration (runbook, AWS CLI)
-
-Set up once by the maintainer with an administrator identity (Tenet 4). The commands live in
-`docs/runbooks/aws-setup.md` (written in the implementation phase) and do the following:
-
-1. Create the bucket in `us-east-1`.
-2. **Block Public Access:** all four settings on, at bucket and account level.
-3. **Object Ownership:** `BucketOwnerEnforced` (ACLs disabled).
-4. **Default encryption:** SSE-S3 (AES-256).
-5. **Versioning:** left disabled (see Re-masking).
-6. **Bucket policy:** deny any request where `aws:SecureTransport` is `false`.
-7. **Lifecycle configuration:**
-
-```json
-{
-  "Rules": [
-    {
-      "ID": "archive-audio-to-glacier-ir",
-      "Status": "Enabled",
-      "Filter": {"And": {"Prefix": "archive/", "ObjectSizeGreaterThan": 131072}},
-      "Transitions": [{"Days": 30, "StorageClass": "GLACIER_IR"}]
-    },
-    {
-      "ID": "abort-incomplete-multipart-uploads",
-      "Status": "Enabled",
-      "Filter": {"Prefix": ""},
-      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
-    }
-  ]
-}
-```
-
-The size filter keeps sidecars (a few KB) in S3 Standard. AWS S3 doesn't transition objects
-under 128 KB by default, and the per-object transition charge would exceed their storage
-savings.
-
-8. **AWS Budgets:** a monthly cost budget of USD 15 with email alerts at 50%, 80%, and 100% of
-   actual spend and 100% of forecast spend. The email address is entered in AWS only, never in
-   the repository. Budgets without actions are free.
-
-## IAM: Pipeline Principal
-
-An IAM user `urbanbio-pipeline` whose access key (`AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`) is stored only in the private-value sources outside the repository:
-the processing machine's local env file and the Codespaces secrets
-([config-cli](../config-cli/config-cli-design.md) § Private values). The runbook rotates the
-key every 90 days and updates both sources and the maintainer's password manager. The
-user has only this inline policy (`<bucket>` substituted at setup):
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ListBucket",
-      "Effect": "Allow",
-      "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::<bucket>"
-    },
-    {
-      "Sid": "ReadWritePipelineObjects",
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
-      "Resource": [
-        "arn:aws:s3:::<bucket>/archive/*",
-        "arn:aws:s3:::<bucket>/retrievals/*",
-        "arn:aws:s3:::<bucket>/curated/*",
-        "arn:aws:s3:::<bucket>/clips/*",
-        "arn:aws:s3:::<bucket>/runs/*"
-      ]
-    },
-    {
-      "Sid": "DeleteClipsOnly",
-      "Effect": "Allow",
-      "Action": "s3:DeleteObject",
-      "Resource": "arn:aws:s3:::<bucket>/clips/*"
-    }
-  ]
-}
-```
-
-The pipeline can't delete archive, curated, or run objects, can't change bucket settings,
-lifecycle, or policy, and has no access to other AWS services. `HeadObject` is authorized by
-`s3:GetObject`. Re-masking overwrites with `s3:PutObject`. Deleting anything outside `clips/`
-needs the administrator identity.
-
-## Cost
+The `filesystem` backend's cost is the operator's own storage. The volume model below sizes
+either backend.
 
 Prices: AWS Price List API, `us-east-1`, publication 2026-09-28 (AmazonS3), 2026-09-11
 (AmazonS3GlacierDeepArchive), 2026-09-16 (AWSDataTransfer).
@@ -242,8 +151,8 @@ Prices: AWS Price List API, `us-east-1`, publication 2026-09-28 (AmazonS3), 2026
 
 Requests and transfer: PUT USD 0.005 per 1,000 (Standard); lifecycle transition to Glacier IR
 USD 0.02 per 1,000 objects; data transfer out to the internet USD 0.09/GB after the first
-100 GB/month (AWS free tier). The processing machine is outside AWS, so downloads from the
-archive to it count as internet transfer out. Uploads into AWS S3 are free.
+100 GB/month (AWS free tier). A processing host outside AWS downloads from the archive as
+internet transfer out. Uploads into AWS S3 are free.
 
 **Volume model** (sized for 3 recorders; parameters in config): 48 kHz, 16-bit mono WAV at
 288 recorded minutes per day is 1.66 GB per recorder-day. Assuming FLAC reaches 60% of WAV
@@ -267,13 +176,12 @@ non-urgent reprocessing over months keeps each month within the 100 GB free allo
 
 ### Compute and upload
 
-Processing runs on the maintainer's own processing machine, so it adds no compute charge. The
-cost model has no compute line. The Codespaces dev container is used for development only, and
-its use is outside this model.
+Processing runs on the operator's own host, so it adds no compute charge, and the cost model
+has no compute line.
 
-The processing machine uploads over the maintainer's wired home internet connection, about
-20 Mbit/s upstream. A weekly card pair is about 14 GB of FLAC (two recorders × 7 days × about
-1.0 GB), about 1.5 hours of upload, overlapping the screen and detect compute. **TODO:
+A weekly card pair is about 14 GB of FLAC (two recorders × 7 days × about 1.0 GB). Upload time
+is that volume over the host's upstream bandwidth: about 1.5 hours at 20 Mbit/s, overlapping the
+screen and detect compute. **TODO:
 measure on the first real card**: upload throughput and its share of wall-clock time
 ([runs](../runs/runs-design.md) § Resource Limits).
 
@@ -293,28 +201,24 @@ passes about 5 TB.
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
 | Audio format | FLAC 16-bit via libsndfile | WAV; W4V (Wildlife Acoustics' compressed format) | FLAC is lossless and open. W4V raises the noise floor [Song Meter Micro 2 UG p.94], which breaks HLD §5.2 fidelity. |
-| Fidelity proof | Decode-and-compare before upload; checksum-verified PUT; HeadObject confirm | Trust the encoder; compare object size | Purge deletes the only unmasked copy, so fidelity must be proven, not assumed. |
-| Bucket versioning | Disabled | Enabled with noncurrent-version expiry | A noncurrent version of a re-masked file still contains the speech the new mask removes (Tenet 1). Deletion protection comes from IAM: the pipeline can't delete. |
-| Buckets | One private bucket, prefixes per zone | Separate buckets per zone | One policy, one lifecycle, one budget. The IAM policy scopes by prefix anyway. |
-| Public material | GitHub Pages only | A public AWS S3 prefix | Keeps "nothing in the bucket is public" absolute and avoids public egress charges. |
+| Fidelity proof | Decode-and-compare before the write; a store write confirmed by full-object SHA-256 | Trust the encoder; compare object size | Purge deletes the only unmasked copy, so fidelity must be proven, not assumed. |
+| Previous masked versions | Not kept in the store (`s3` versioning disabled; `filesystem` replace by rename) | Keep versions with expiry | A previous version of a re-masked file still contains the speech the new mask removes (Tenet 1). Deletion protection comes from the store's delete restriction, not from versions. |
+| Zones | One store, prefixes per zone | Separate stores or buckets per zone | One marker, one policy, one lifecycle, one budget. The IAM policy scopes by prefix anyway. |
+| Public material | GitHub Pages only | A public store prefix | Keeps "nothing in the store is public" absolute and avoids public egress charges. |
 | Archive tier (T1) | Glacier IR after 30 days | Standard-IA; Glacier Flexible Retrieval; Deep Archive | See T1 resolution. |
-| Credentials | Long-lived IAM user key in the private-value sources (local env file, Codespaces secrets), rotated every 90 days | IAM Identity Center or OIDC short-lived credentials | Short-lived credentials need an identity provider and a sign-in step in every session, in both environments, which is a lot of setup for one maintainer. A narrowly scoped key that can't delete the archive, rotated on a schedule, is the simplest workable option. |
-| Upload checksums | SHA-256 additional checksum on single PUTs | MD5 `Content-MD5`; CRC64NVME multipart | SHA-256 is the project's identity hash, so one value serves provenance and transport integrity. Single PUTs keep it a full-object checksum. |
 
 ## Open Questions & Future Decisions
 
 ### Deferred
 1. FLAC compression ratio on real recordings (affects the cost model only).
 2. Moving data older than two years to Deep Archive once the archive passes about 5 TB.
-3. A separate read-only IAM key for the development environment, which no longer writes to
-   the archive ([config-cli](../config-cli/config-cli-design.md) § Environments). Set up with
-   the AWS setup runbook.
-4. Cross-region replication or a second-account backup. Not planned: AWS S3 stores data
+3. Cross-region replication or a second-account backup. Not planned: AWS S3 stores data
    redundantly across Availability Zones, and the cost would double.
 
 ## References
 
 - HLD §2, §5, §6.1, T1, Tenets 1 and 4
+- [store](../store/store-design.md): store interface, key layout, `s3` bucket and IAM
 - AWS Price List API (bulk offer files):
   https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json,
   `…/AmazonS3GlacierDeepArchive/…`, `…/AWSDataTransfer/…`

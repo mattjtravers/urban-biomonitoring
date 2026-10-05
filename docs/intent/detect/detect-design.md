@@ -101,8 +101,8 @@ the acoustic model.
    (inputs = `masked_sha256`; models = acoustic and geo model file hashes; params) has no
    ledger row ([runs](../runs/runs-design.md)).
 2. For each batch (one UTC day of one deployment): use the work-directory FLAC left by archive
-   if its SHA-256 matches `masked_sha256`; otherwise download it to the work directory and
-   verify it. Then call `detect` with the batch's file paths and `n_workers` set to
+   if its SHA-256 matches `masked_sha256`; otherwise fetch it from the store to the work directory
+   with `store.get`, which verifies it. Then call `detect` with the batch's file paths and `n_workers` set to
    `resources.workers` ([runs](../runs/runs-design.md) § Resource Limits). The library's
    workers each hold one loaded model and read one file at a time, so memory doesn't grow
    with the batch.
@@ -119,8 +119,8 @@ The expected order is 10⁴ rows per recorder-day and tens of MB of Parquet per 
 DuckDB.
 
 **Compute.** The library's published benchmark is 50× real time on a 4-core Intel i7 (8th
-generation). With 2 workers on the 8-core reference machine, a week of two recorders (67
-hours of audio) is expected to take about 1–3 hours. **TODO: measure on the first real card**:
+generation). With the default 2 workers on a host of similar speed, a week of two recorders
+(67 hours of audio) is expected to take about 1–3 hours. **TODO: measure on the first real card**:
 wall-clock time and peak memory.
 
 ## Re-runs and New Models
@@ -148,10 +148,10 @@ wall-clock time and peak memory.
 ## Open Questions & Future Decisions
 
 ### Deferred
-1. Throughput on the processing machine. If too slow, reuse the screen's BirdNET outputs for windows
+1. Throughput on a processing host at the default worker count. If too slow, reuse the screen's BirdNET outputs for windows
    untouched by the mask
-   ([speech-screen](../speech-screen/speech-screen-design.md) § Deferred), or use a larger
-   machine for detect runs.
+   ([speech-screen](../speech-screen/speech-screen-design.md) § Deferred), or run detect on a
+   larger host against the same store.
 2. Whether the BirdNET model's CC BY-NC-SA 4.0 terms carry any conditions onto published
    detection data. This bears on T6 in [publish](../publish/publish-design.md).
 

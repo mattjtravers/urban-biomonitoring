@@ -8,32 +8,50 @@ prefix: INGEST-INTAKE
 ## Context and Design Philosophy
 
 Intake is the only part of the pipeline that handles a card's raw contents. It owns the
-quarantine (HLD §5.1): `/workspaces/quarantine` on the Codespace disk, outside the repository
-working tree. Unmasked audio enters the quarantine and is deleted there; it never leaves.
+quarantine (HLD §5.1): a directory on the processing machine's local disk at `paths.quarantine`
+([config-cli](../../config-cli/config-cli-design.md) § Environments), outside the repository
+working tree. Unmasked audio enters the quarantine and is deleted there; it never leaves the
+quarantine, and so never leaves the processing machine.
 
 Intake does five things, in order: fix each file's identity with SHA-256 before anything
 parses it; register the retrieval; normalize every timestamp to UTC; record what the card says
 about the deployment's health; and, at the end of the pipeline, purge originals that the archive
 has verified.
 
-## Transfer onto the Codespace
+## Transfer into the Quarantine
 
-The recorder's microSD card is read on the maintainer's computer and copied straight into the
-quarantine. This is a manual runbook step (Tenet 4):
+The recorder's microSD card is read by the processing machine's card reader and copied
+straight from the card into the quarantine. This is a manual runbook step (Tenet 4). On the
+reference machine (a ChromeOS Linux environment), the card is shared with Linux and appears
+under `/mnt/chromeos/removable/<card name>/`:
 
 ```bash
-# On the maintainer's computer, with the card mounted:
-gh codespace cp -r -c <codespace-name> /path/to/card remote:/workspaces/quarantine/incoming/<label>
+mkdir -p ~/urbanbio/quarantine/incoming/<label>
+cp -r --preserve=timestamps /mnt/chromeos/removable/<card name>/. \
+  ~/urbanbio/quarantine/incoming/<label>/
 ```
 
-Dragging the card's folder onto `quarantine/incoming/` in the VS Code Explorer works too. No
-copy stays on the computer. The card isn't wiped until `urbanbio retrieval status` reports it
-safe (below).
+Before ingest, the copy is compared with the card byte for byte:
+
+```bash
+diff -rq /mnt/chromeos/removable/<card name>/ ~/urbanbio/quarantine/incoming/<label>/
+```
+
+Any output means the copy is incomplete or corrupt. The copy is deleted and repeated. Ingest's
+hashes are computed from the copy, so this comparison is the only check that the copy matches
+the card.
+
+The copy goes from the card's mount directly into `incoming/`. It is never staged anywhere
+else on the machine, including the host operating system's own folders (on ChromeOS, *My
+files*, *Downloads*, or Google Drive), which may be synced or backed up. No other copy is made.
+On ChromeOS, a backup of the Linux environment (*Back up Linux*) is a copy of the whole disk
+written to *My files*, so it is taken only when the quarantine holds no audio. The card isn't
+wiped until `urbanbio retrieval status` reports it safe (below).
 
 ## Quarantine Layout
 
 ```
-/workspaces/quarantine/
+<paths.quarantine>/
   incoming/<label>/               # As copied; <label> is any name the maintainer chooses
   <retrieval_id>/
     card/                         # The card contents, moved here from incoming/<label>/
@@ -42,7 +60,8 @@ safe (below).
 ```
 
 The quarantine directory is created with mode `0700`. Every intake path argument is resolved
-(symlinks followed) and must lie under `/workspaces/quarantine`. Anything else is refused.
+(symlinks followed) and must lie under the resolved `paths.quarantine`. Anything else is
+refused.
 
 ## Ingest Flow
 
@@ -152,10 +171,26 @@ Sizing at 48 kHz, 16-bit, mono, 1 minute on / 4 minutes off around the clock:
 | WAV per recorder-day | 1.66 GB |
 | WAV per recorder-week (one weekly card) | 11.6 GB |
 
-The Codespace disk is 32 GB, shared with the OS, the dev container, Python dependencies, and
-model caches (about 18 GB free before the pipeline's dependencies are installed). One card's
-week fits; two do not. The procedure is **one card at a time**: copy, run `urbanbio process`,
-and wait for it to finish before copying the next.
+The processing machine's disk is shared with the OS, Python dependencies, the uv cache, and
+model caches. The quarantine and work directories together may use at most
+`quarantine.budget_gb`, and the filesystem must keep `quarantine.min_free_gb` free (both in
+the environment's config file). The reference machine has a 50 GB Linux disk with about 49 GB
+free before the pipeline's dependencies are installed:
+
+| Use | GB |
+|---|---|
+| Python dependencies (CPU `torch`, LiteRT, `scipy`, `pyarrow`, `duckdb`) and the uv cache | ~6 (estimate) |
+| BirdNET and Silero models, test-audio cache | < 1 |
+| `quarantine.min_free_gb` | 3 |
+| Margin | ~4 |
+| `quarantine.budget_gb` | 35 |
+
+A budget of 35 GB holds two weekly cards (23.2 GB) at once but not three, so the weekly
+procedure can copy both recorders' cards before processing. They are still **processed one at a
+time**: only one pipeline command runs at a time
+([runs](../../runs/runs-design.md) § Concurrency), so the second card's `urbanbio process` is
+started after the first finishes. **TODO: measure on the first real card**: the installed
+dependency footprint and uv cache size, which settle the budget.
 
 Peak usage is the card's originals. The archive stage purges each original as soon as its
 masked FLAC is verified ([archive](../../archive/archive-design.md) § Archive Flow), so the
@@ -164,8 +199,11 @@ never exceeds the card's WAV size. Detect then deletes each FLAC after analyzing
 fits (for example, a missed weekly retrieval), copy `Data/` in date ranges (the filenames start
 with the date) and ingest each part with `--retrieval R`.
 
-`ingest` and `archive` refuse to start when free space on the quarantine filesystem is below
-`quarantine.min_free_gb`.
+`ingest` refuses to start when the quarantine and work directories together already exceed
+`quarantine.budget_gb` (the card being ingested is already in `incoming/`, so it counts), or
+when free space on the quarantine filesystem is below `quarantine.min_free_gb`. `archive`
+refuses to start when free space is below `quarantine.min_free_gb`. Both errors state the
+current usage, the budget, and the free space.
 
 ## Purge
 
@@ -212,11 +250,11 @@ purged with them.
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Transfer method | Manual `gh codespace cp` or Explorer upload | A sync agent on the computer; uploading the card to AWS S3 first | Weekly and manual (Tenet 4). Anything via AWS S3 would put unmasked audio outside the quarantine (G3). |
+| Transfer method | Manual `cp` from the card's mount straight into `incoming/` | Dragging in the host's file manager; staging in the host's own folders first; a sync agent; uploading the card to AWS S3 first | Weekly and manual (Tenet 4). One command that never lands the audio outside the quarantine. Host folders may be synced or backed up, and anything via AWS S3 would put unmasked audio outside the quarantine (G3). |
 | Hash timing | Before any parsing | Hash while parsing | HLD §3.1: the checksum fixes identity before anything touches the file. |
 | DST handling | Use the device's recorded offset; never apply zone rules | Convert filename times with `America/New_York` | Devices that keep a fixed offset would be shifted by an hour across the change if zone rules were applied. |
 | Drift model | Linear between synchronizations, from an operator measurement | Ignore drift; acoustic reference events | Linear is simple and adequate for a crystal clock over a week. Acoustic references are a later refinement. |
-| Disk pressure | One card at a time; date-range parts when needed | A larger Codespace machine | The free tier fits one recorder-week at 48 kHz. A larger machine is an option, not a requirement. |
+| Disk pressure | A configured budget (35 GB on the reference machine) checked at ingest; cards processed one at a time; date-range parts when a card doesn't fit | A fixed limit of one card on disk; a larger disk | A budget adapts to the machine and lets both weekly cards be copied in one sitting. Processing one at a time keeps peak memory and disk use to one card's worth. |
 | Purge gate | Archive ledger plus bit-identity check | AWS S3 object exists | Existence doesn't prove the archived samples equal the masked original. |
 | Files outside the deployment window | Flag; archive or discard only by maintainer decision | Archive everything on the card | Pre-deployment test recordings are often made indoors near people (Tenet 1). |
 | Re-copied files | The copy that passes all checks supersedes the other | Keep both; keep the newest | Only one copy of a recording should reach the archive, and "passes the checks" is verifiable where "newest" is not. |
@@ -235,8 +273,8 @@ purged with them.
 ## References
 
 - HLD §3.1, §5.1, §6.1, Tenets 3–4
-- Codespace retention and why the card is the backup:
-  [config-cli](../../config-cli/config-cli-design.md) § Codespace lifecycle
-- GitHub CLI `gh codespace cp`: https://cli.github.com/manual/gh_codespace_cp
-- GitHub Codespaces persistence of `/workspaces`:
-  https://docs.github.com/en/codespaces/developing-in-a-codespace/rebuilding-the-container-in-a-codespace
+- Losing the processing machine and why the card is the backup:
+  [config-cli](../../config-cli/config-cli-design.md) § Losing an environment
+- Weekly card procedure: `docs/runbooks/weekly-card.md`
+- ChromeOS, sharing files and removable media with Linux:
+  https://support.google.com/chromebook/answer/9145439

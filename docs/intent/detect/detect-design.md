@@ -49,7 +49,7 @@ so every detector gets the same treatment.
 | Acoustic model | BirdNET V2.4 (6,522 classes), `birdnet.load("acoustic", "2.4", "tf", library="litert")` |
 | Runtime | LiteRT (`ai-edge-litert`, installed with `birdnet` on Linux for Python 3.11–3.13). No TensorFlow. |
 | Precision | FP32 |
-| Model license | CC BY-NC-SA 4.0. The library downloads models at first use into `BIRDNET_APP_DATA` (`/workspaces/.cache/birdnet`); they're never committed or vendored (HLD §8). |
+| Model license | CC BY-NC-SA 4.0. The library downloads models at first use into `BIRDNET_APP_DATA` (`paths.model_cache`); they're never committed or vendored (HLD §8). |
 | Python | 3.13 (the newest version with LiteRT wheels) |
 | `model_id` | `birdnet-acoustic-2.4-fp32` |
 
@@ -102,8 +102,10 @@ the acoustic model.
    ledger row ([runs](../runs/runs-design.md)).
 2. For each batch (one UTC day of one deployment): use the work-directory FLAC left by archive
    if its SHA-256 matches `masked_sha256`; otherwise download it to the work directory and
-   verify it. Then call `detect` with all batch inputs at once, `n_workers` set to the CPU
-   count.
+   verify it. Then call `detect` with the batch's file paths and `n_workers` set to
+   `resources.workers` ([runs](../runs/runs-design.md) § Resource Limits). The library's
+   workers each hold one loaded model and read one file at a time, so memory doesn't grow
+   with the batch.
 3. Attach `detection_id`, `start_utc`, `site_id`, `deployment_id`, `mask_version`,
    `in_geo_list`, and `overlaps_mask` (the window intersects any current mask interval).
 4. Write one `detections` part file per run × retrieval, partitioned by `model_id`, `site_id`,
@@ -117,8 +119,9 @@ The expected order is 10⁴ rows per recorder-day and tens of MB of Parquet per 
 DuckDB.
 
 **Compute.** The library's published benchmark is 50× real time on a 4-core Intel i7 (8th
-generation). A 2-core Codespace is expected to be slower. A week of two recorders (67 hours of
-audio) is expected to take about 1–3 hours. **TODO: measure on the first real card.**
+generation). With 2 workers on the 8-core reference machine, a week of two recorders (67
+hours of audio) is expected to take about 1–3 hours. **TODO: measure on the first real card**:
+wall-clock time and peak memory.
 
 ## Re-runs and New Models
 
@@ -135,7 +138,7 @@ audio) is expected to take about 1–3 hours. **TODO: measure on the first real 
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Integration path | `birdnet` library 1.1.1 on LiteRT | BirdNET Analyzer 2.4.0 CLI/API (TensorFlow ≥ 2.20, CSV output) | Same team and V2.4 model. In-memory Arrow results instead of CSV files, no TensorFlow install on a 32 GB disk, active releases (2026), and the same API also serves V3.0 and Perch V2 later. |
+| Integration path | `birdnet` library 1.1.1 on LiteRT | BirdNET Analyzer 2.4.0 CLI/API (TensorFlow ≥ 2.20, CSV output) | Same team and V2.4 model. In-memory Arrow results instead of CSV files, no multi-GB TensorFlow install, active releases (2026), and the same API also serves V3.0 and Perch V2 later. |
 | Model version | V2.4 | V3.0 (marked preview by the library) | V2.4 is the stable release with the published calibration literature (HLD §3.4). V3.0 can run later as a second `model_id`. |
 | Stored floor (T2) | 0.10 | 0.25 (library/Analyzer default); 0.01 | Calibration needs low-confidence detections to fit the logistic curve. 0.01 would grow the table about tenfold for scores that almost never pass review. |
 | Location/date filter | Flag (`in_geo_list`) | Filter at prediction time (`custom_species_list`) | Filtering would drop the non-target noise classes (HLD §3.3) and make the filter irreversible. |
@@ -145,7 +148,7 @@ audio) is expected to take about 1–3 hours. **TODO: measure on the first real 
 ## Open Questions & Future Decisions
 
 ### Deferred
-1. Throughput on the Codespace. If too slow, reuse the screen's BirdNET outputs for windows
+1. Throughput on the processing machine. If too slow, reuse the screen's BirdNET outputs for windows
    untouched by the mask
    ([speech-screen](../speech-screen/speech-screen-design.md) § Deferred), or use a larger
    machine for detect runs.

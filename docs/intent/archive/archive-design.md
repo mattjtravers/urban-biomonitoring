@@ -67,6 +67,11 @@ Package: `urbanbio.storage` (`archive.py`, `flac.py`, `sidecar.py`, `s3.py`, `pa
 Any failed check raises `IntegrityError`. The unit is flagged, nothing is purged, and the
 original stays in the quarantine.
 
+A worker ([runs](../runs/runs-design.md) § Resource Limits) is one process that takes one file
+through steps 1–7 at a time. `resources.workers` workers run in parallel. The main process
+records each result (step 8) and purges (step 9), so ledger writes and purges happen in one
+place.
+
 The work-directory FLAC is kept until the detect stage has processed that file, so detect
 needn't download it. Detect then deletes it.
 
@@ -178,8 +183,11 @@ savings.
 
 ## IAM: Pipeline Principal
 
-An IAM user `urbanbio-pipeline` whose access key is stored only as Codespaces secrets
-(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). The runbook rotates the key every 90 days. The
+An IAM user `urbanbio-pipeline` whose access key (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`) is stored only in the private-value sources outside the repository:
+the processing machine's local env file and the Codespaces secrets
+([config-cli](../config-cli/config-cli-design.md) § Private values). The runbook rotates the
+key every 90 days and updates both sources and the maintainer's password manager. The
 user has only this inline policy (`<bucket>` substituted at setup):
 
 ```json
@@ -234,8 +242,8 @@ Prices: AWS Price List API, `us-east-1`, publication 2026-09-28 (AmazonS3), 2026
 
 Requests and transfer: PUT USD 0.005 per 1,000 (Standard); lifecycle transition to Glacier IR
 USD 0.02 per 1,000 objects; data transfer out to the internet USD 0.09/GB after the first
-100 GB/month (AWS free tier). Codespaces run outside AWS, so downloads from the archive to the
-Codespace count as internet transfer out.
+100 GB/month (AWS free tier). The processing machine is outside AWS, so downloads from the
+archive to it count as internet transfer out. Uploads into AWS S3 are free.
 
 **Volume model** (sized for 3 recorders; parameters in config): 48 kHz, 16-bit mono WAV at
 288 recorded minutes per day is 1.66 GB per recorder-day. Assuming FLAC reaches 60% of WAV
@@ -257,20 +265,17 @@ transfer out. From Deep Archive, about USD 11 restore + USD 89 transfer out, plu
 orchestration and up to 48 h of waiting. Transfer out dominates either way. Spreading a
 non-urgent reprocessing over months keeps each month within the 100 GB free allowance.
 
-### Codespaces
+### Compute and upload
 
-Compute runs in the maintainer's Codespace, which GitHub bills separately from AWS. Personal
-accounts include a monthly quota (GitHub Free: 120 core-hours and 15 GB-month of storage;
-GitHub Pro: 180 core-hours and 20 GB-month). Beyond it, a 2-core machine costs USD 0.18 per hour
-and storage USD 0.07 per GB-month. Storage counts everything in the Codespace (repository,
-dependencies, model caches, quarantine), measured over time.
+Processing runs on the maintainer's own processing machine, so it adds no compute charge. The
+cost model has no compute line. The Codespaces dev container is used for development only, and
+its use is outside this model.
 
-A weekly card for two recorders needs the speech screen, archive, and detect over about 67 hours
-of audio. On a 2-core machine that is several hours a week, roughly 30–60 core-hours a month on
-top of development time. That is within the free quota, but not by a wide margin.
-Quarantine use is brief (one card at a time, purged per file), so average storage stays near
-the dependency footprint. **TODO: measure on the first real card**: core-hours per card and
-average storage. If the quota is exceeded, the overage is a few dollars a month.
+The processing machine uploads over the maintainer's wired home internet connection, about
+20 Mbit/s upstream. A weekly card pair is about 14 GB of FLAC (two recorders × 7 days × about
+1.0 GB), about 1.5 hours of upload, overlapping the screen and detect compute. **TODO:
+measure on the first real card**: upload throughput and its share of wall-clock time
+([runs](../runs/runs-design.md) § Resource Limits).
 
 ### T1 resolution (HLD §10)
 
@@ -293,7 +298,7 @@ passes about 5 TB.
 | Buckets | One private bucket, prefixes per zone | Separate buckets per zone | One policy, one lifecycle, one budget. The IAM policy scopes by prefix anyway. |
 | Public material | GitHub Pages only | A public AWS S3 prefix | Keeps "nothing in the bucket is public" absolute and avoids public egress charges. |
 | Archive tier (T1) | Glacier IR after 30 days | Standard-IA; Glacier Flexible Retrieval; Deep Archive | See T1 resolution. |
-| Credentials | Long-lived IAM user key in Codespaces secrets, rotated every 90 days | IAM Identity Center or OIDC short-lived credentials | Short-lived credentials need an identity provider and a sign-in step in every Codespace session, which is a lot of setup for one maintainer. A narrowly scoped key that can't delete the archive, rotated on a schedule, is the simplest workable option. |
+| Credentials | Long-lived IAM user key in the private-value sources (local env file, Codespaces secrets), rotated every 90 days | IAM Identity Center or OIDC short-lived credentials | Short-lived credentials need an identity provider and a sign-in step in every session, in both environments, which is a lot of setup for one maintainer. A narrowly scoped key that can't delete the archive, rotated on a schedule, is the simplest workable option. |
 | Upload checksums | SHA-256 additional checksum on single PUTs | MD5 `Content-MD5`; CRC64NVME multipart | SHA-256 is the project's identity hash, so one value serves provenance and transport integrity. Single PUTs keep it a full-object checksum. |
 
 ## Open Questions & Future Decisions
@@ -301,7 +306,10 @@ passes about 5 TB.
 ### Deferred
 1. FLAC compression ratio on real recordings (affects the cost model only).
 2. Moving data older than two years to Deep Archive once the archive passes about 5 TB.
-3. Cross-region replication or a second-account backup. Not planned: AWS S3 stores data
+3. A separate read-only IAM key for the development environment, which no longer writes to
+   the archive ([config-cli](../config-cli/config-cli-design.md) § Environments). Set up with
+   the AWS setup runbook.
+4. Cross-region replication or a second-account backup. Not planned: AWS S3 stores data
    redundantly across Availability Zones, and the cost would double.
 
 ## References

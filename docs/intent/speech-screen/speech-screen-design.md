@@ -137,12 +137,13 @@ original once it is verified. It chooses files and holds them in `quarantine/spe
 
 Selection uses a seeded RNG, and the seed is recorded in the run.
 
-**Labeling.** The maintainer listens to held originals inside the Codespace and records speech
+**Labeling.** The maintainer listens to held originals on the processing machine and records speech
 intervals in `quarantine/speech-labeling/labels.csv` (`audio_file_id, start_s, end_s,
 reviewer_id`), one row per interval. A file with no speech gets one row with `start_s` and
-`end_s` empty. Every held file must have at least one row before import. `urbanbio speech label --import` validates the file and writes
-the `speech_labels` table (no audio), then releases the holds. Playback streams to the
-maintainer's browser for listening only. Nothing is saved outside the quarantine.
+`end_s` empty. Every held file must have at least one row before import. `urbanbio speech
+label --import` validates the file and writes the `speech_labels` table (no audio), then
+releases the holds. Playback is local, on the processing machine, for listening only. Nothing is
+saved outside the quarantine.
 
 **Metrics** (`urbanbio speech recall`), per stratum and weighted to the population with
 stratum sizes:
@@ -180,8 +181,10 @@ re-masked intervals are withdrawn by [publish](../publish/publish-design.md).
 
 Per recorded minute, the screen runs one BirdNET pass at 1.5 s hop (about twice the windows of
 detect's non-overlapping pass) and one Silero pass. A week from two recorders is about 67 hours
-of audio. Throughput on the Codespace is **TODO: measure on the first real card**. The run
-records units per second.
+of audio. A worker is one process that loads both detectors once and screens one file at a
+time ([runs](../runs/runs-design.md) § Resource Limits); `resources.workers` processes run
+in parallel. Throughput and peak memory on the processing machine are **TODO: measure on the
+first real card**. The run records units per second and its `resources`.
 
 ## Decisions & Alternatives
 

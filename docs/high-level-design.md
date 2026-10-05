@@ -1,6 +1,6 @@
 # urban-biomonitoring — High-Level Design
 
-**Status:** Approved baseline v1.4 (2026-10-05). Changes go through review.
+**Status:** Approved baseline v1.5 (2026-10-05). Changes go through review.
 **Process:** Linked-Intent Development. This HLD → low-level design → EARS requirements → tests → code.
 **Scope of this document:** the software system: architecture, components, data, storage,
 privacy controls, and extension points. Field protocols, site details, and project planning
@@ -67,10 +67,16 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
                          └──────────────────┴────── AWS S3 (system of record) ─┴───────────────┘
 ```
 
-- **Execution model:** a Python CLI run in the project's Codespace dev container, stage by
-  stage or end to end. No servers.
-- **System of record:** AWS S3. The Codespace disk holds only working copies and the
-  quarantine (§5.1).
+- **Execution model:** a Python CLI, run stage by stage or end to end. No servers. There are
+  two environments:
+  - The **processing machine** handles all real media. It is a local Linux machine the
+    maintainer controls, running the CLI directly with uv and no container, and it reads
+    recorder media through its own card reader. The current machine is described in the
+    local processing setup runbook.
+  - The **development environment** is the project's Codespaces dev container. It runs tests
+    and builds against synthetic or public-domain audio and never holds real field audio.
+- **System of record:** AWS S3. The processing machine's local disk holds only working copies
+  and the quarantine (§5.1); losing that machine loses nothing authoritative.
 - **Idempotency:** every stage is keyed by content checksums and run IDs. Re-running a stage
   on the same inputs is a no-op unless parameters or versions change.
 - **Provenance:** every stage writes a run record (inputs, outputs, code commit, model and
@@ -177,16 +183,17 @@ keeping GBIF publication possible.
 
 | Zone | Location | Contents | Retention |
 |------|----------|----------|-----------|
-| Quarantine | Codespace container disk only, at `/workspaces/quarantine`, outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
+| Quarantine | Processing machine's local disk only, at a configured path outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
 | Archive | AWS S3 | Speech-masked originals (lossless FLAC) + verbatim header sidecars | Indefinite; lifecycle-transitioned to a Glacier tier after a configurable age |
 | Curated | AWS S3 | Parquet tables, calibrations, labels, run records | Indefinite, Standard tier |
 | Clips | AWS S3 | Short masked detection clips for review and dashboard | Indefinite, Standard tier; withdrawn when a re-mask covers them |
 | Published | GitHub Pages | Dashboard, public Parquet, DwC-A, approved clips | Versioned releases |
 
-The quarantine sits under `/workspaces` because that is the only Codespace path that survives
-a container rebuild, and outside the repository working tree so no git operation can stage its
-contents. Its capacity is bounded by the Codespace disk, so ingest processes media in batches
-that fit (sized in the LLD).
+The quarantine is on the processing machine's local disk, at a path set in that environment's
+configuration, and outside the repository working tree so no git operation can stage its
+contents. The directory has mode `0700`, every intake path is resolved and checked against it,
+and originals are purged only after archival is verified. Its capacity is bounded by a
+configured disk budget, so ingest processes media in batches that fit (sized in the LLD).
 
 All AWS S3 storage is private: buckets block public access, and only the project's own IAM
 principals can read or write them. Public material is served only from GitHub Pages.
@@ -233,15 +240,17 @@ durations).
 
 - Two-detector screening with padding (§3.2), measured against a hand-labeled sample for
   speech recall.
-- Unmasked audio never leaves the quarantine: once there, it is never committed, never written
-  to AWS S3, and never copied elsewhere. The recorder's media is wiped and reused only after
-  archival is verified.
+- Unmasked audio never leaves the quarantine. Because the quarantine is on the processing
+  machine's local disk, unmasked audio never leaves that machine: it is never committed, never
+  written to AWS S3, and never copied elsewhere, including to the development environment.
+  Listening to held originals for speech labeling happens only on the processing machine. The
+  recorder's media is wiped and reused only after archival is verified.
 - Published clips get a second speech check.
 
 ### 6.2 Location
 
-- Exact site coordinates live in private configuration held as a Codespaces secret, never in a
-  file in the repository. They never appear in tables, run records, or logs. Positions that
+- Exact site coordinates live in private configuration supplied as an environment variable
+  from a source outside the repository (§8), never in a file in the repository. They never appear in tables, run records, or logs. Positions that
   recorders write into their own file headers and logs survive only in the private archive
   (header sidecars and device logs), which is never published.
 - Published coordinates are generalized (e.g., rounded to 0.01°, ~1 km), with the
@@ -267,10 +276,23 @@ durations).
 
 ## 8. Engineering standards
 
-- Python with uv, Pydantic data contracts, pytest, GitHub Actions CI, Codespaces dev container,
-  `CLAUDE.md` for agent guidance, design docs in `docs/`, MIT license.
-- Configuration is declarative (one file per environment); secrets come only from the
-  environment.
+- Python with uv, Pydantic data contracts, pytest, GitHub Actions CI, a Codespaces dev
+  container for development, `CLAUDE.md` for agent guidance, design docs in `docs/`, MIT
+  license.
+- Configuration is declarative: committed stage parameters shared by every environment, plus
+  one committed public file per environment (processing machine, development) for paths,
+  resources, and disk budget, selected by the environment. Secrets and private values
+  (`URBANBIO_SITES`, `URBANBIO_BUCKET`, AWS credentials) come only from environment variables in
+  every environment: from Codespaces secrets in the development environment, and on the
+  processing machine from a mode-`0600` env file outside the repository that the shell loads
+  at startup. `urbanbio config check` verifies the source in each environment.
+- **Reproducible processing machine:** the processing machine can be rebuilt from the
+  repository alone. A committed, idempotent setup script installs system packages, uv, and
+  locked dependencies, and creates the local directories and an empty secrets file; a runbook
+  covers the steps a script can't do. Both environments read one committed system-package
+  list and the pinned Python and uv versions, so they can't drift apart, and CI runs the setup
+  script in a clean Debian container so it can't break unnoticed. Each processing run starts
+  from the code and lockfile CI tested (`git pull && uv sync`).
 - **Licensing:** BirdNET models carry their own non-commercial license (CC BY-NC-SA 4.0), so
   they are downloaded by the `birdnet` library at runtime and never vendored. Published data
   license is decided before the first release.
@@ -285,6 +307,9 @@ durations).
 | Vendor metadata lost in format conversion | Verbatim header sidecars, checksums of originals |
 | Model updates change results | Model version in every detection; runs never overwrite |
 | Storage cost creep | Lifecycle tiering, compression, budget alerts |
+| Processing machine sleeps or loses power mid-run | Idempotent, resumable stages (ledger in AWS S3); runbook keeps the machine awake and plugged in; the card is the backup until safe to wipe |
+| Memory exhaustion on a small processing machine | Configurable worker count with a conservative default; audio stages stream one file per worker; peak memory measured on the first card |
+| Processing machine can't be rebuilt | Setup script and runbook in the repo; CI runs the script in a clean Debian container |
 
 ## 10. Technical decisions
 

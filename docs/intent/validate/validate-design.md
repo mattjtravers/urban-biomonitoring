@@ -50,7 +50,8 @@ least 10 of them `correct`) or the taxon stays `unvalidated`.
 **Evaluate Whombat first**, with Label Studio as the alternative and a minimal local UI only if
 both fail. Criteria: spectrogram plus audio playback of clips, a correct/incorrect/unsure
 verdict with a true-species field, file-based import/export with no cloud service, and running
-inside the Codespace.
+locally in either environment. Review uses only masked clips, so it may run on the processing
+machine or in the development environment.
 
 | Candidate | License | Notes |
 |---|---|---|

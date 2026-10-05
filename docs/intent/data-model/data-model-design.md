@@ -14,8 +14,8 @@ stage reads and writes these models; nothing passes untyped dicts between stages
 Principles:
 
 - **Public-safe by default.** No persisted model has a field for exact coordinates, addresses,
-  or people's names. Exact site coordinates come from private configuration (a Codespaces
-  secret; see [config-cli](../config-cli/config-cli-design.md)) and are reduced to generalized
+  or people's names. Exact site coordinates come from private configuration (an environment
+  variable; see [config-cli](../config-cli/config-cli-design.md) § Private values) and are reduced to generalized
   coordinates when configuration loads. Positions that recorders write into their own headers
   and logs are kept only verbatim in the private archive's sidecars and device logs
   ([archive](../archive/archive-design.md)), never parsed into a table.
@@ -335,8 +335,8 @@ loaded and an AWS S3 secret created from the environment credential chain (`CREA
 union_by_name = true)`, so partition columns are queryable and filters on them prune files.
 
 Curated tables are small (detections are on the order of 10⁶–10⁷ rows a year, tens to hundreds
-of MB), so reading them from AWS S3 into the Codespace stays within the monthly free egress
-allowance (see [archive](../archive/archive-design.md) § Cost).
+of MB), so reading them from AWS S3 into either environment stays within the monthly free
+egress allowance (see [archive](../archive/archive-design.md) § Cost).
 
 ## Decisions & Alternatives
 

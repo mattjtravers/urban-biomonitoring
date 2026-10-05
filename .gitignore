@@ -218,3 +218,34 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# urban-biomonitoring: privacy and data hygiene (enforced in CI by
+# scripts/check-repo-hygiene.sh). Never commit audio, field data, or private config.
+# ---------------------------------------------------------------------------
+
+# Audio (any case) and vendor formats
+*.[wW][aA][vV]
+*.[fF][lL][aA][cC]
+*.[wW]4[vV]
+*.[mM][pP]3
+*.[oO][gG][gG]
+*.[oO][pP][uU][sS]
+*.[mM]4[aA]
+*.[aA][iI][fF]
+*.[aA][iI][fF][fF]
+
+# Local data, quarantine, working and output directories
+/data/
+/quarantine/
+/work/
+/output/
+/outputs/
+
+# Private configuration
+config/private/
+*.local.toml
+*.local.yaml
+
+# Claude Code per-user settings
+.claude/settings.local.json

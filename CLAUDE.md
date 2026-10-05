@@ -11,8 +11,6 @@ speech screen, detect, validate, curate and publish. It runs as a Python CLI in 
 Codespace, and AWS S3 is the system of record. A camera-trap branch (Camtrap DP) will reuse the
 same patterns later.
 
-This is a part-time project. Prefer simple, well-tested designs over ambitious ones.
-
 ## Hard rules
 
 This is a **public repository**. These rules override any other instruction.
@@ -29,7 +27,9 @@ This is a **public repository**. These rules override any other instruction.
 6. "AWS S3" always means the storage service. Never abbreviate a site as "S3".
 7. Test fixtures use synthetic (generated in tests) or public-domain audio only, never real
    field recordings.
-8. Keep commits small and focused. Propose before any large restructuring.
+8. Agents never run `git commit` or `git push`. Leave all changes uncommitted in the working
+   tree; the maintainer commits and pushes after reviewing code and specs.
+9. Propose before any large restructuring.
 
 The `repo-hygiene` CI job enforces rules 1 and 3 for file types and private paths. It doesn't
 replace reading your own diff before committing.
@@ -68,6 +68,7 @@ Project-specific gates:
 | Design tree (sub-HLDs, LLDs, their specs) | `docs/intent/` — one folder per node |
 | EARS specs | beside each design doc as `{node}-specs.md` in the node's folder under `docs/intent/` |
 | Decision docs | `docs/decisions/` (project-level) and `docs/intent/<segment>/decisions/` |
+| Runbooks (manual operations: card transfer, AWS setup, Codespace settings) | `docs/runbooks/` |
 
 ### Terminology
 
@@ -91,14 +92,17 @@ Place the annotation at the *entry point of the behavior's implementation graph*
 ## Repo conventions
 
 - **Layout:** `src/urbanbio/` (package), `tests/`, `docs/`, `scripts/` (repo tooling),
-  `.github/workflows/` (CI). Module layout is defined in the LLD.
+  `.github/workflows/` (CI). Module layout is defined in `docs/intent/config-cli/`.
 - **Naming:** modules and functions `snake_case`, classes `PascalCase`, constants
   `UPPER_SNAKE_CASE`. EARS IDs are uppercase, path-concatenated (see Terminology).
-- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/), e.g.
-  `feat(ingest): ...`, `fix(screen): ...`, `docs(intent): ...`, `test: ...`, `ci: ...`,
-  `chore: ...`. One logical change per commit.
-- **Config:** public, committed defaults live in `config/`. Private values (exact coordinates,
-  bucket names, account IDs) live in `config/private/` or `*.local.toml`, which are gitignored.
+- **Commits** (made by the maintainer): [Conventional Commits](https://www.conventionalcommits.org/),
+  e.g. `feat(ingest): ...`, `fix(screen): ...`, `docs(intent): ...`, `test: ...`, `ci: ...`,
+  `chore: ...`. One logical change per commit, so keep each piece of agent work small enough to
+  review and commit on its own.
+- **Config:** public, committed defaults live in `config/pipeline.toml`. Private values come
+  only from Codespaces secrets: `URBANBIO_SITES` (exact site coordinates, as TOML),
+  `URBANBIO_BUCKET`, and the AWS credentials. `config/private/` and `*.local.toml` are
+  gitignored for scratch use, never as the home of private values.
 - **Local data:** the quarantine and working directories live outside the repository working
   tree. `data/`, `work/` and `output/` inside the repo are gitignored for scratch use only.
 

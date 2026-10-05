@@ -1,6 +1,6 @@
 # urban-biomonitoring — High-Level Design
 
-**Status:** Approved baseline v1.1 (2026-10-05). Changes go through review.
+**Status:** Approved baseline v1.4 (2026-10-05). Changes go through review.
 **Process:** Linked-Intent Development. This HLD → low-level design → EARS requirements → tests → code.
 **Scope of this document:** the software system: architecture, components, data, storage,
 privacy controls, and extension points. Field protocols, site details, and project planning
@@ -43,12 +43,26 @@ The data model must support, without restructuring:
 - Effects of covariates (weather, human noise) on detected activity.
 - Comparison with external occurrence data (e.g., eBird).
 
+### 1.4 Tenets
+
+Tie-breakers for decisions no requirement covers. When two conflict, the higher one wins.
+
+1. **Privacy over data.** When it is uncertain whether audio contains speech, mask it. Losing
+   some non-speech audio is acceptable; leaking speech is not.
+2. **Reproducibility over storage cost.** Keep every run, score, and parameter set rather than
+   pruning them to save money.
+3. **Stop rather than guess.** When a stage cannot verify something (a checksum mismatch,
+   unparseable metadata, an ambiguous timestamp), it stops and flags the affected input instead
+   of continuing on a best guess.
+4. **A documented manual step beats automation for rare operations.** Weekly media transfer and
+   one-time cloud setup are runbook steps, not automated infrastructure.
+
 ## 2. Architecture overview
 
 ```
   Recorder media ──► [1 Ingest] ──► [2 Speech screen] ──► [3 Detect] ──► [4 Validate] ──► [5 Curate] ──► [6 Publish]
                       adapters       mask speech           detector       sample, label    tables,        static site,
-                      metadata       archive originals     all scores     calibrate        joins          DwC-A export
+                      metadata       archive masked audio  all scores     calibrate        joins          DwC-A export
                          │                  │                  │               │               │
                          └──────────────────┴────── AWS S3 (system of record) ─┴───────────────┘
 ```
@@ -84,11 +98,14 @@ The data model must support, without restructuring:
 - **Masks** flagged segments by replacing the samples with silence. File length, sample rate,
   and timing stay unchanged, so all offsets remain valid.
 - Writes a speech-event log (file, offsets, detector, score) with no audio content.
-- Only masked audio leaves quarantine (§5.2).
+- Only masked audio leaves quarantine. The archive step encodes masked audio as FLAC, writes the
+  header sidecar, uploads both to AWS S3, and verifies fidelity before the original is purged
+  from the quarantine (§5.2).
 
 ### 3.3 Detect
 
-- Runs BirdNET Analyzer in batch on masked audio, using location and date filtering.
+- Runs BirdNET (V2.4 model) through the `birdnet` Python library in batch on masked audio, and
+  flags each detection against the species list expected for the site's location and date.
 - Stores **every** detection above a low configurable floor, with confidence, model name and
   version, and analysis parameters.
 - Keeps non-target classes the model provides (e.g., engine, dog, human) as noise covariates.
@@ -136,7 +153,7 @@ Field-level schemas are defined in the LLD as Pydantic models.
 | Site | Stable location. Exact coordinates are private; generalized coordinates are published. |
 | Deployment | One recorder at one site for a continuous period: device model and serial, firmware, recording configuration, mounting notes. Modeled after Camtrap DP deployments for reuse by the image branch. |
 | MediaRetrieval | One media pull within a deployment: time span, file count, checksums, battery status, anomalies. |
-| AudioFile | One recording: UTC start, duration, sample rate, original and masked checksums, storage location, and tier. |
+| AudioFile | One recording: UTC start, duration, sample rate, original and masked checksums, and storage location. Its current storage tier is derived from file age and the lifecycle rule. |
 | SpeechEvent | One masked segment: file, offsets, detector, score. No audio. |
 | Detection | File, offsets, taxon (scientific + common name), confidence, model and version, run ID. |
 | Label | A reviewer's verdict on a detection. |
@@ -163,7 +180,7 @@ keeping GBIF publication possible.
 | Quarantine | Codespace container disk only, at `/workspaces/quarantine`, outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
 | Archive | AWS S3 | Speech-masked originals (lossless FLAC) + verbatim header sidecars | Indefinite; lifecycle-transitioned to a Glacier tier after a configurable age |
 | Curated | AWS S3 | Parquet tables, calibrations, labels, run records | Indefinite, Standard tier |
-| Clips | AWS S3 | Short masked detection clips for review and dashboard | Indefinite, Standard tier |
+| Clips | AWS S3 | Short masked detection clips for review and dashboard | Indefinite, Standard tier; withdrawn when a re-mask covers them |
 | Published | GitHub Pages | Dashboard, public Parquet, DwC-A, approved clips | Versioned releases |
 
 The quarantine sits under `/workspaces` because that is the only Codespace path that survives
@@ -197,8 +214,10 @@ re-run from it.
 s3://<bucket>/archive/site=<site_id>/deployment=<dep_id>/date=<YYYY-MM-DD>/<file>.flac
 s3://<bucket>/archive/.../<file>.header.json
 s3://<bucket>/curated/<table>/...parquet
+s3://<bucket>/retrievals/site=<site_id>/deployment=<dep_id>/<retrieval_id>/...   (device logs, manifest)
 s3://<bucket>/clips/<detection_id>.flac
 s3://<bucket>/runs/<run_id>.json
+s3://<bucket>/runs/<run_id>.log
 ```
 
 ### 5.4 Cost controls
@@ -221,8 +240,10 @@ durations).
 
 ### 6.2 Location
 
-- Exact site coordinates live in private configuration that is never committed to the public
-  repository.
+- Exact site coordinates live in private configuration held as a Codespaces secret, never in a
+  file in the repository. They never appear in tables, run records, or logs. Positions that
+  recorders write into their own file headers and logs survive only in the private archive
+  (header sidecars and device logs), which is never published.
 - Published coordinates are generalized (e.g., rounded to 0.01°, ~1 km), with the
   generalization declared in Darwin Core fields.
 - Public site identifiers are opaque (`site1`, `site2`, …).
@@ -250,8 +271,9 @@ durations).
   `CLAUDE.md` for agent guidance, design docs in `docs/`, MIT license.
 - Configuration is declarative (one file per environment); secrets come only from the
   environment.
-- **Licensing:** the BirdNET model has its own non-commercial license, so it's installed as a
-  dependency and never vendored. Published data license is decided before the first release.
+- **Licensing:** BirdNET models carry their own non-commercial license (CC BY-NC-SA 4.0), so
+  they are downloaded by the `birdnet` library at runtime and never vendored. Published data
+  license is decided before the first release.
 
 ## 9. Technical risks
 
@@ -264,13 +286,13 @@ durations).
 | Model updates change results | Model version in every detection; runs never overwrite |
 | Storage cost creep | Lifecycle tiering, compression, budget alerts |
 
-## 10. Open technical decisions
+## 10. Technical decisions
 
-| ID | Decision | Proposed default |
-|----|----------|------------------|
-| T1 | Glacier tier and transition age for archived audio | Glacier Instant Retrieval after 60 days |
-| T2 | Stored detection confidence floor | 0.1 |
-| T3 | Labeling tool | Evaluate an existing open-source tool first |
-| T4 | Published coordinate precision | 0.01° |
-| T5 | Speech padding and thresholds | ±2 s; tune on labeled sample |
-| T6 | Published data license | CC BY 4.0 |
+| ID | Decision | Resolution | Details |
+|----|----------|------------|---------|
+| T1 | Glacier tier and transition age for archived audio | S3 Glacier Instant Retrieval after 30 days | `docs/intent/archive/` § Cost |
+| T2 | Stored detection confidence floor | 0.10 | `docs/intent/detect/` |
+| T3 | Labeling tool | Evaluate Whombat first, then Label Studio; a minimal local UI only if both fail | `docs/intent/validate/` |
+| T4 | Published coordinate precision | 0.01°, declared as `coordinateUncertaintyInMeters` = 1000; per-site overrides may only be coarser | `docs/intent/publish/` |
+| T5 | Speech padding and thresholds | ±2 s padding; BirdNET `Human vocal` ≥ 0.10; Silero VAD ≥ 0.30; retuned against measured speech recall | `docs/intent/speech-screen/` |
+| T6 | Published data license | CC BY 4.0, after confirming the BirdNET model license (CC BY-NC-SA 4.0) places no conditions on detection data; CC BY-NC 4.0 otherwise | `docs/intent/publish/` |

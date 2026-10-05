@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Passive acoustic recordings to validated, standards-aligned species occurrence data."
 readme = "README.md"
 license = "MIT"
-# BirdNET Analyzer depends on TensorFlow, which publishes wheels for CPython <= 3.13.
+# birdnet runs the V2.4 model on LiteRT (ai-edge-litert), which publishes wheels for CPython <= 3.13.
 requires-python = ">=3.12,<3.14"
 dependencies = []
 

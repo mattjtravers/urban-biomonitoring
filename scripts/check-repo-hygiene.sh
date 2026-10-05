@@ -5,7 +5,8 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-forbidden_path='(^|/)(config/private|quarantine|data|work|outputs?)/|\.local\.(toml|ya?ml)$|(^|/)\.env$|(^|/)\.claude/settings\.local\.json$'
+# Local-data directories are matched at the repository root only, like their .gitignore entries.
+forbidden_path='^(config/private|quarantine|data|work|outputs?)/|\.local\.(toml|ya?ml)$|(^|/)\.env$|(^|/)\.claude/settings\.local\.json$'
 audio_ext='\.(wav|flac|w4v|mp3|ogg|opus|m4a|aif|aiff)$'
 
 status=0

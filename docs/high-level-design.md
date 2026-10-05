@@ -1,6 +1,6 @@
 # urban-biomonitoring — High-Level Design
 
-**Status:** Approved baseline v1.0 (2026-10-03). Changes go through review.
+**Status:** Approved baseline v1.1 (2026-10-05). Changes go through review.
 **Process:** Linked-Intent Development. This HLD → low-level design → EARS requirements → tests → code.
 **Scope of this document:** the software system: architecture, components, data, storage,
 privacy controls, and extension points. Field protocols, site details, and project planning
@@ -53,9 +53,10 @@ The data model must support, without restructuring:
                          └──────────────────┴────── AWS S3 (system of record) ─┴───────────────┘
 ```
 
-- **Execution model:** a Python CLI run locally or in a Codespace, stage by stage or end to
-  end. No servers.
-- **System of record:** AWS S3. Local disk holds only working copies and the quarantine (§5.1).
+- **Execution model:** a Python CLI run in the project's Codespace dev container, stage by
+  stage or end to end. No servers.
+- **System of record:** AWS S3. The Codespace disk holds only working copies and the
+  quarantine (§5.1).
 - **Idempotency:** every stage is keyed by content checksums and run IDs. Re-running a stage
   on the same inputs is a no-op unless parameters or versions change.
 - **Provenance:** every stage writes a run record (inputs, outputs, code commit, model and
@@ -65,7 +66,7 @@ The data model must support, without restructuring:
 
 ### 3.1 Ingest
 
-- Reads a recorder's media (e.g., an SD card) into a local quarantine area.
+- Reads a recorder's media (e.g., an SD card) into the quarantine (§5.1).
 - Computes a SHA-256 for every file before anything else touches it.
 - A **recorder adapter** parses device-specific file naming, header metadata, and device logs
   into the common metadata contract (§4). Initial adapter: Wildlife Acoustics Song Meter
@@ -159,11 +160,19 @@ keeping GBIF publication possible.
 
 | Zone | Location | Contents | Retention |
 |------|----------|----------|-----------|
-| Quarantine | Local disk only | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
+| Quarantine | Codespace container disk only, at `/workspaces/quarantine`, outside the repository working tree | Unmasked originals as copied from media | Deleted once masking and AWS S3 archival are verified |
 | Archive | AWS S3 | Speech-masked originals (lossless FLAC) + verbatim header sidecars | Indefinite; lifecycle-transitioned to a Glacier tier after a configurable age |
 | Curated | AWS S3 | Parquet tables, calibrations, labels, run records | Indefinite, Standard tier |
 | Clips | AWS S3 | Short masked detection clips for review and dashboard | Indefinite, Standard tier |
-| Published | GitHub Pages / AWS S3 public prefix | Dashboard, public Parquet, DwC-A, approved clips | Versioned releases |
+| Published | GitHub Pages | Dashboard, public Parquet, DwC-A, approved clips | Versioned releases |
+
+The quarantine sits under `/workspaces` because that is the only Codespace path that survives
+a container rebuild, and outside the repository working tree so no git operation can stage its
+contents. Its capacity is bounded by the Codespace disk, so ingest processes media in batches
+that fit (sized in the LLD).
+
+All AWS S3 storage is private: buckets block public access, and only the project's own IAM
+principals can read or write them. Public material is served only from GitHub Pages.
 
 ### 5.2 Archive fidelity
 
@@ -205,7 +214,9 @@ durations).
 
 - Two-detector screening with padding (§3.2), measured against a hand-labeled sample for
   speech recall.
-- Unmasked audio never leaves the local quarantine.
+- Unmasked audio never leaves the quarantine: once there, it is never committed, never written
+  to AWS S3, and never copied elsewhere. The recorder's media is wiped and reused only after
+  archival is verified.
 - Published clips get a second speech check.
 
 ### 6.2 Location

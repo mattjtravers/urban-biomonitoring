@@ -34,6 +34,7 @@ A **unit** is the smallest piece of work a stage can skip or redo:
 | detect | one archived audio file under one model | `audio_file_id` + `model_id` |
 | rescreen | one archived audio file at its current mask version | `audio_file_id` + `mask_version` (the version re-screened) |
 | admin | one deployment change, or one waiver | `deployment_id`, or `<stage>:<unit_id>:<reason_code>` |
+| validate, publish | defined with their specs | Both stages are interfaces only in Phase 1. Their units (for example, the units that cut clips and write the `clips` table) are defined when their specs are written, and must give every row they write a `stage` and `unit_id`. |
 
 The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
 
@@ -48,6 +49,11 @@ The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
 }
 ```
 
+- `input_checksums` holds the unit's input: the original file's SHA-256 for stages that read
+  originals, `original_pcm_sha256` for `detect` (see [detect](../detect/detect-design.md)), the
+  current `masked_sha256` for `rescreen`, and for `speech-label` the SHA-256 of the file's rows
+  in `labels.csv` in canonical form, so importing the same labels again is a no-op and changed
+  labels re-run the unit.
 - `models` lists every versioned component whose output the stage depends on: model files for
   `screen`, `detect`, and `rescreen`, and the recorder adapter (`adapter:<key>:<version>`) for
   `ingest`.

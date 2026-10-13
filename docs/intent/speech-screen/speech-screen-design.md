@@ -176,7 +176,12 @@ retrievals re-screened (below).
 
 `urbanbio rescreen --retrieval R` (HLD §5.2) runs on archived masked audio:
 
-1. Download the current FLAC and verify it against the current `masked_sha256`.
+1. Download the current FLAC and verify it against the current `masked_sha256`. If it doesn't
+   match, but the object's metadata shows `mask-version` one above the recorded version and a
+   `run-id` of an earlier `rescreen` run, a re-mask was interrupted: adopt that run's outputs
+   for the unit and finish the unit without re-screening
+   ([archive](../archive/archive-design.md) § Re-masking, Interrupted re-mask). Any other
+   mismatch flags the unit `archive_conflict`.
 2. Run the detectors with the current parameters, and add any `manual` events.
 3. If the new events' padded union adds zeroed samples, build `remask(current, events)` and hand
    it to the archive as `mask_version + 1`. Otherwise record the run with no new version.

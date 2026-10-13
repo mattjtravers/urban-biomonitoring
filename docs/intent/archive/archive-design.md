@@ -56,7 +56,7 @@ labels are imported, with any `manual` speech events in its first mask.
      archived version is never overwritten except by a higher `mask_version`.
 7. **Write** the FLAC and then the sidecar with `store.put`, passing the precomputed SHA-256,
    `overwrite=False`, and the metadata `audio-file-id`, `mask-version`, `masked-sha256`,
-   `masked-pcm-sha256`, `original-sha256`. `put` returns only after the store has confirmed the
+   `masked-pcm-sha256`, `original-sha256`, `run-id`. `put` returns only after the store has confirmed the
    object's length and full SHA-256 ([store](../store/store-design.md) § Store Interface), so a
    returned `put` is the proof that the archived bytes are the verified FLAC.
 8. **Record** an AudioMaskVersion row and a `succeeded` ledger unit (unit ID
@@ -137,6 +137,18 @@ mask version:
   in that run's batch, and the unit's ledger row cites them in `output_refs`. Archive writes no
   `archive` ledger row for a re-mask. `audio_mask_versions_current` counts rows cited by a
   succeeded `archive` unit (first versions) or `rescreen` unit (later versions).
+- **Interrupted re-mask.** The overwrite in step 7 lands before the batch's records, so a
+  crash in between leaves the store holding mask version *n* + 1 while the current records still
+  name version *n*. The object's metadata identifies the state: `mask-version` is the recorded
+  version + 1 and `run-id` names the crashed run. The resuming `rescreen` recognizes it
+  ([speech-screen](../speech-screen/speech-screen-design.md) § Re-screening and Re-masking) and
+  **adopts** that run's outputs for the unit: it copies the crashed run's uncited rows with the
+  same `stage` and `unit_id` (the AudioMaskVersion row, the new `speech_events` rows, and any
+  `clip_withdrawals` rows) into its own batch under its own `run_id`, finishes any clip
+  withdrawals still pending, and writes the ledger row. The copied rows keep their content IDs.
+  Until then, every reader that fetches the file and finds this state treats the unit as
+  `failed` (`remask_in_progress`), not flagged, so it is retried automatically. Any other
+  mismatch between an archived object and its records is `archive_conflict`.
 - **Clips are withdrawn.** Every clip in the `clips` table cut from this file whose window
   (including its context) overlaps an interval the new mask adds, and that isn't already
   withdrawn, is deleted from `clips/`, whether it was cut for review or published, and a
@@ -235,6 +247,7 @@ passes about 5 TB.
 | Zones | One store, prefixes per zone | Separate stores or buckets per zone | One marker, one policy, one lifecycle, one budget. The IAM policy scopes by prefix anyway. |
 | Public material | GitHub Pages only | A public store prefix | Keeps "nothing in the store is public" absolute and avoids public egress charges. |
 | Archive tier (T1) | Glacier IR after 30 days | Standard-IA; Glacier Flexible Retrieval; Deep Archive | See T1 resolution. |
+| Interrupted re-mask | Run ID in object metadata; resuming run adopts the crashed run's rows | Write the records before the overwrite; keep the previous version until recorded | Records before the object would break the write order (rows citing an object that may not exist), and keeping the previous version would retain the speech the re-mask removes (Tenet 1). |
 | Clips after a re-mask | Delete every clip overlapping the added mask, review or published | Withdraw only published clips | A review clip from an earlier mask version holds the speech the re-mask removes; keeping it would undo the re-mask (Tenet 1, HLD §5.1). |
 
 ## Open Questions & Future Decisions

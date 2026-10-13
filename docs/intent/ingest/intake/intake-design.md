@@ -246,8 +246,9 @@ deleted when all of these hold:
    process doesn't count ([runs](../../runs/runs-design.md) § Write Order).
 2. The file isn't held for speech labeling.
 3. The file isn't flagged at any stage.
-4. Its current archive success didn't come from a run with uncommitted code
-   ([runs](../../runs/runs-design.md) § Run Record).
+4. None of its current `ingest`, `screen`, or `archive` successes came from a run with
+   uncommitted code ([runs](../../runs/runs-design.md) § Run Record). Each of those stages reads
+   the original, so a clean re-run needs it in the quarantine.
 
 Two exceptions remove flagged originals:
 

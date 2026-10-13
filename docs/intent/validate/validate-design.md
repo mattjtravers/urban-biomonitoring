@@ -46,7 +46,8 @@ detection (the 3 s window plus 1.5 s of context each side) and stored privately 
 `clips/<detection_id>.flac`, with a row in the `clips` table
 ([data-model](../data-model/data-model-design.md) § Clip). A re-mask that overlaps a clip deletes it
 ([archive](../archive/archive-design.md) § Re-masking); a later review cuts it again from the new
-version. `unsure`
+version. Clip cutting treats an interrupted re-mask like detect does (`failed`,
+`remask_in_progress`; [detect](../detect/detect-design.md) § Detect Flow). `unsure`
 labels are excluded from fitting. A calibration needs at least `min_labels` (default 50, at
 least 10 of them `correct`) or the taxon stays `unvalidated`.
 

@@ -32,6 +32,9 @@ class RecorderAdapter(Protocol):
     key: ClassVar[str]                  # e.g. "songmeter-micro2"
     version: ClassVar[int]              # bumps when parsing output changes; part of ingest's idempotency key
 
+    def __init__(self, config: Mapping[str, object]) -> None:
+        """Receive the adapter's own table from config/pipeline.toml ([ingest.<key>])."""
+
     def list_media(self, root: Path) -> MediaListing:
         """Classify every file under root as audio, device log, diagnostic, or unknown."""
 
@@ -55,15 +58,24 @@ Data passed across the interface (Pydantic models in `urbanbio.ingest.adapters.b
   `temperature_c: float | None`, `device_position: tuple[float, float] | None`,
   `vendor_fields: dict[str, str]`.
 - `DeviceLog`: `sessions: list[LogSession]` (one per power-on), each with `rows:
-  list[LogRow]` (`time_local`, `battery_v`, `files_completed`, `extra: dict[str, str]`).
+  list[LogRow]` (`time_local`, `battery_v`, `files_completed`, `extra: dict[str, str]`);
+  `unparsed_rows: list[int]` (line numbers of log rows the adapter couldn't parse, skipped);
+  `diagnostics: list[DiagnosticFile]` (`path`, `time_local: datetime | None`, one per diagnostics
+  file, which the device writes after an unexpected reboot or on request); and
+  `low_battery_v: float | None` (the voltage below which intake records `low_battery`, from the
+  adapter's config table; `None` when the device logs no voltage).
 - `RawChunk`: `chunk_id: str` (four characters), `offset: int`, `size: int`, `data: bytes`.
 
 `device_position` exists so intake can check it against the deployment's site. It is exact,
 so intake uses it only for that comparison and never persists it outside the private archive
 sidecar (HLD §6.2).
 
-Adapters are pure parsers: no clock correction and no UTC conversion. Those are intake's job,
-so every device follows the same normalization rules.
+Adapters are pure parsers: no clock correction, no UTC conversion, and no anomalies or flags
+beyond the `AdapterError` a file's own inconsistency raises. Normalization and every record of
+retrieval health are intake's job, so every device follows the same rules. An adapter checks
+only what the device's own files say against each other; checks against the deployment
+(serial, recorder name, sample rate) are intake's, because the adapter never sees the
+deployment.
 
 ## Image Branch Seam
 

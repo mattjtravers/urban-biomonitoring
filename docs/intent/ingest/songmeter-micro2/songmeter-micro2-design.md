@@ -50,8 +50,10 @@ That is untested until a Micro card is available.
 
 **Recorder name rule.** The recorder name ends up in filenames, which are stored in the
 private archive. Because it can be any text, the runbook sets it to an opaque value derived from
-the deployment (for example `site1A`). The adapter flags `recorder_name_mismatch` when the
-filename prefix doesn't equal the deployment's `recorder_name`.
+the deployment (for example `site1A`). The adapter raises `recorder_name_mismatch` when the
+filename prefix doesn't equal GUANO `WA|Song Meter|Prefix`, and intake flags the file
+`unexpected_format` when that name doesn't equal the deployment's `recorder_name`
+([intake](../intake/intake-design.md) § Ingest Flow).
 
 ## Audio Format
 
@@ -142,10 +144,11 @@ Parsing rules:
   power-on session ([intake](../intake/intake-design.md) § Ingest Flow, step 5).
 - **TODO: confirm from first real card:** `DATE` and `TIME` formats, whether `LAT`/`LON` carry
   signs as well as `NS`/`EW`, and line endings. Until confirmed, a row that doesn't parse is
-  skipped and the retrieval gets a `summary_unparseable` anomaly naming the row; the audio
-  files aren't flagged, and the summary file is still archived verbatim.
+  skipped and its line number returned in `unparsed_rows`; intake records a
+  `summary_unparseable` anomaly naming it, the audio files aren't flagged, and the summary file
+  is still archived verbatim.
 - Low-battery anomaly threshold: 4.2 V (`ingest.songmeter_micro2.low_battery_v` in
-  `config/pipeline.toml`). The recorder shuts down at about 3.7 V
+  `config/pipeline.toml`), returned as `DeviceLog.low_battery_v`. The recorder shuts down at about 3.7 V
   with alkaline cells [UG p.112], and lithium cells may fail at higher voltages.
 
 The summary file includes the deployment's exact coordinates, so it's archived only to the
@@ -154,8 +157,9 @@ private store and never parsed into a persisted table beyond battery and file co
 ## Diagnostics Files [UG p.93]
 
 `<RECORDER NAME>_<DATE>_<TIME>.minidiags` files are written after unexpected reboots or on
-request. They are read by the desktop Configurator. The adapter records their presence and
-timestamps as `reboot` anomalies and archives them verbatim without parsing.
+request. They are read by the desktop Configurator. The adapter doesn't parse them: it returns
+each one in `DeviceLog.diagnostics` with the local time from its filename, intake records a
+`reboot` anomaly for each, and the archive stores them verbatim.
 
 ## Clock and Time Zone [UG pp.30–31, 74]
 
@@ -181,7 +185,7 @@ timestamps as `reboot` anomalies and archives them verbatim without parsing.
 |---|---|
 | `list_media(root)` | `Data/*.wav` → audio; `*_Summary.txt` at root → logs; `*.minidiags` → diagnostics; everything else → unknown |
 | `read_audio_metadata(path)` | Filename regex + RIFF/GUANO parse + cross-checks: filename vs `Original Filename`, filename time vs GUANO time (more than 1 s apart raises `timestamp_mismatch`), `Samplerate` vs `fmt `, `Length` vs frames, filename prefix vs `WA\|Song Meter\|Prefix` |
-| `read_device_log(listing)` | Parse the summary file into sessions and rows |
+| `read_device_log(listing)` | Parse the summary file into sessions and rows, list unparsed rows and diagnostics files, and return the low-battery threshold |
 | `header_chunks(path)` | All non-`data` RIFF chunks, verbatim, with offsets |
 
 Cross-check failures raise `AdapterError` with reason codes `filename_unparseable`,

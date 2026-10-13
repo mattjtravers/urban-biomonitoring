@@ -88,7 +88,7 @@ Two functions construct a `MaskedAudio`, and nothing else can:
   re-screening (mask version + 1). Its input is already masked, decoded from the archive and
   checked against `masked_pcm_sha256`.
 
- `MaskedAudio` carries `audio_file_id`, `mask_version`,
+`MaskedAudio` carries `audio_file_id`, `mask_version`,
 the event IDs applied (cumulative across versions), and `masked_seconds`. The archive's write API accepts only
 `MaskedAudio` ([archive](../archive/archive-design.md)), so unmasked samples can't reach
 the store through it. `QuarantinedAudio` can only be loaded from a path under the quarantine root.
@@ -143,7 +143,8 @@ intervals in `quarantine/speech-labeling/labels.csv` (`audio_file_id, start_s, e
 reviewer_id`), one row per interval. A file with no speech gets one row with `start_s` and
 `end_s` empty. Every held file must have at least one row before import. `urbanbio speech
 label --import` validates the file and writes the `speech_labels` table (no audio), then
-releases the holds. Playback is local, on the processing host, for listening only. Nothing is
+releases the holds. A held file with no row, or any malformed row, refuses the whole import
+with nothing written, so a half-imported sample can't release some holds and not others. Playback is local, on the processing host, for listening only. Nothing is
 saved outside the quarantine.
 
 **Metrics** (`urbanbio speech recall`), per stratum and weighted to the population with
@@ -165,8 +166,10 @@ them would score every miss a labeler found as caught.
 four retrievals. Below target, thresholds and padding are retuned (HLD T5) and affected
 archives are re-screened.
 
-**Misses.** A labeled speech interval outside the mask means the screen missed speech. Import
-turns it into a `manual` SpeechEvent. Held files aren't archived until their labels are imported
+**Misses.** A labeled speech interval that isn't wholly inside the detector mask means the
+screen missed at least part of it. Import turns the whole interval into a `manual` SpeechEvent,
+so a partly caught interval is still masked in full (Tenet 1). This is stricter than recall's
+90% rule (below), which scores the detectors rather than deciding what to mask. Held files aren't archived until their labels are imported
 ([intake](../ingest/intake/intake-design.md) § Speech-Labeling Hold), so the archive includes the
 event in the file's first mask. A miss also means files that weren't sampled may carry speech
 in the archive; when measured recall is below target, thresholds are retuned and the affected

@@ -92,8 +92,9 @@ refused.
      `urbanbio runs unflag ingest UNIT --reason truncated --note TEXT`
      ([runs](../../runs/runs-design.md) § Waivers), and the frames present are screened and
      archived like any other file.
-   - Check the file against the deployment: sample rate, serial, and recorder name match;
-     bit depth is 16 and channels is 1 (otherwise flag `unexpected_format`). If the header has
+   - Check the file against the deployment: sample rate, serial, and recorder name match the
+     deployment's, bit depth is 16, and channels is 1. Any difference flags the file
+     `unexpected_format`. If the header has
      a device position, compare it to the site's private coordinates (below).
    - Normalize time (below) and build the AudioFile record.
    - Check the file lies within the deployment: `start_utc` no earlier than the deployment's
@@ -118,8 +119,9 @@ was moved, and re-running the same command must finish it without registering it
   whose files haven't been moved (its `card/part<NN>/` directory doesn't exist) and whose
   manifest equals the one just computed. A match resumes that part at the move in step 2;
   no match registers a new part.
-- **`PATH` is gone.** Ingest looks for a registered part of the same deployment, moved into the
-  quarantine, whose manifest records that `<label>` and which isn't yet safe to wipe. Matching
+- **`PATH` is gone.** Ingest takes `PATH`'s last path component as the label and looks for a
+  registered part of the same deployment, moved into the quarantine, whose manifest records that
+  `<label>` and which isn't yet safe to wipe. Matching
   only unfinished parts lets an operator reuse a label from earlier weeks.
 
 Exactly one match resumes that part: the remaining steps run, the ledger skips completed files,
@@ -170,10 +172,13 @@ From the device log and the file list:
 
 - **Gaps:** consecutive file starts further apart than `duty_on_s + duty_off_s + 5 s` (or
   `max_file_length_s + 5 s` for continuous schedules), outside configured daily windows.
-- **Reboots:** device-log sessions after the first.
+- **Reboots:** device-log sessions after the first, and each diagnostics file the adapter
+  lists (`DeviceLog.diagnostics`).
+- **Unparsed log rows:** a `summary_unparseable` anomaly naming each row in
+  `DeviceLog.unparsed_rows`.
 - **File count:** the sum of files the log says were completed, compared with audio files
   present. Any difference gives a `file_count_mismatch` anomaly.
-- **Low battery:** any logged voltage under the adapter's low-voltage threshold.
+- **Low battery:** any logged voltage under `DeviceLog.low_battery_v`.
 
 Anomalies are records, not failures. Only per-file problems flag units.
 
@@ -225,11 +230,12 @@ WAV size plus one batch of FLACs. Detect then deletes each FLAC after analyzing 
 fits (for example, a missed weekly retrieval), copy `Data/` in date ranges (the filenames start
 with the date) and ingest each part with `--retrieval R`.
 
-`ingest` refuses to start when the quarantine and work directories together already exceed
+`ingest` refuses to start, with a `ConfigError` (exit `3`), when the quarantine and work directories together already exceed
 `quarantine.budget_gb` (the card being ingested is already in `incoming/`, so it counts), or
 when free space on the quarantine filesystem is below `quarantine.min_free_gb`. `archive`
-refuses to start when free space is below `quarantine.min_free_gb`. Both errors state the
-current usage, the budget, and the free space.
+refuses to start the same way when free space is below `quarantine.min_free_gb`. The reason codes are
+`disk_budget_exceeded` and `disk_free_low`, and the message states the current usage, the
+budget, and the free space.
 
 ## Purge
 

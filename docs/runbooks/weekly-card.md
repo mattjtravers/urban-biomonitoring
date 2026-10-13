@@ -81,8 +81,8 @@ uv run urbanbio process ~/urbanbio/quarantine/incoming/<label> \
   [--clock-offset-s <seconds>] [--speech-sample <N>]
 ```
 
-`process` runs ingest, the speech screen, the optional speech sample, archive (purging each
-original once it is verified), and detect. It prints the `retrieval_id`. Detach and let it run.
+`process` runs ingest, the speech screen, the optional speech sample, archive (purging
+originals once their archival is recorded), and detect. It prints the `retrieval_id`. Detach and let it run.
 
 When it ends, check the exit code (`echo $?`):
 

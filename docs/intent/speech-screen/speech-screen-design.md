@@ -127,8 +127,8 @@ conversation, and it calls for a look at the thresholds. Masking still proceeds 
 HLD §6.1 requires recall measured against a hand-labeled sample.
 
 **Sampling.** `urbanbio speech sample --retrieval R --n N` (or `urbanbio process
---speech-sample N`) runs after screening and before archive, because archive purges each
-original once it is verified. It chooses files and holds them in `quarantine/speech-labeling/` ([intake](../ingest/intake/intake-design.md)
+--speech-sample N`) runs after screening and before archive, because archive purges originals
+once their archival is recorded in the store. It chooses files and holds them in `quarantine/speech-labeling/` ([intake](../ingest/intake/intake-design.md)
 § Speech-Labeling Hold). Strata, equal thirds by default:
 
 1. Files where at least one detector fired.

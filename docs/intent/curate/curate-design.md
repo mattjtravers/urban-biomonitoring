@@ -51,7 +51,7 @@ not core changes (HLD §7).
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Weather source | NCEI Global Hourly (ISD) for NWS station observations | NWS observations API (`api.weather.gov`); Meteostat; Open-Meteo reanalysis | The HLD names NWS station observations, and NCEI is their official archive. The `api.weather.gov` observations endpoint serves only recent observations, so it can't backfill the months before curate first runs. |
+| Weather source | NCEI Global Hourly (ISD) for NWS station observations | NWS observations API (`api.weather.gov`); Meteostat; Open-Meteo reanalysis | The HLD names NWS station observations, and NCEI is their official archive. The `api.weather.gov` observations endpoint is expected to serve only recent observations (unconfirmed; Deferred 3), so it likely can't backfill the months before curate first runs, while NCEI holds the full history. |
 | Summary time zone | Each site's IANA zone for dates; UTC for timestamps | UTC dates; one project-wide zone | Diel and phenology questions are about local days, and the zone belongs to the site. |
 
 ## Open Questions & Future Decisions

@@ -223,10 +223,10 @@ Results from a dirty run must stay replaceable, so in the `processing` profile:
   removes the previous archived version), `purge` (deletion can't be redone), `deployment
   create`/`end` and `runs unflag` (`admin`; no clean re-run exists), and `speech label --import`
   (labels can't be re-derived) refuse it with a `ConfigError`.
-
 - `--allow-dirty` implies `--no-purge` for `archive` and `process`, and purge refuses to delete an
-  original whose current archive success came from a dirty run. The originals stay in the
-  quarantine until a clean run has re-run `screen` and `archive` on them.
+  original any of whose current `ingest`, `screen`, or `archive` successes came from a dirty run
+  ([intake](../ingest/intake/intake-design.md) § Purge). The originals stay in the quarantine
+  until a clean run has re-run those stages on them.
 - A clean run re-runs every unit whose current success came from a dirty run, when its input is
   still reachable (§ Lookups). If a clean `archive` produces different samples from the dirty
   run's archived object, the unit is flagged `archive_conflict`, which the operator resolves with

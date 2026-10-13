@@ -49,7 +49,7 @@ labels are imported, with any `manual` speech events in its first mask.
 6. **Check for an earlier write.** `store.head` the target key. If an object exists with the
    same `mask-version` metadata:
    - same `masked-pcm-sha256`: the write already happened (for example, the run crashed
-     before its ledger flush). Skip the write and continue at step 8 with the existing object's
+     before its batch's ledger write). Skip the write and continue at step 8 with the existing object's
      checksum. Identical samples count as identical even when FLAC bytes differ (for example,
      after a libsndfile upgrade).
    - different `masked-pcm-sha256`: raise `IntegrityError` (`archive_conflict`) and flag. An

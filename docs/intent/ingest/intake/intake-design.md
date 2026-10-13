@@ -234,10 +234,11 @@ current usage, the budget, and the free space.
 
 Purge deletes an original from the quarantine. The archive stage calls it for each batch of
 files right after that batch's ledger rows are written to the store. Each deletion is a `purge`
-unit: the file is deleted first, and the purge ledger rows follow in the next batch write. A
+unit: the file is deleted first, and the purge ledger rows follow in the next batch write, or at
+run end after the last batch. A
 purge unit whose original is already gone, and whose archive success is in the store, is
 recorded as `succeeded` ([runs](../../runs/runs-design.md) § Write Order). `urbanbio purge --retrieval R` sweeps up anything left (files archived with
-`--no-purge`, superseded files, device logs, released speech-labeling holds). An original is
+`--no-purge`, superseded files, device logs). An original is
 deleted when all of these hold:
 
 1. The archive ledger **in the store** shows the unit (`audio_file_id`, mask version 1)
@@ -250,14 +251,14 @@ deleted when all of these hold:
    uncommitted code ([runs](../../runs/runs-design.md) § Run Record). Each of those stages reads
    the original, so a clean re-run needs it in the quarantine.
 
-Two exceptions remove flagged originals:
+These exceptions remove flagged originals:
 
 - A file flagged `superseded` is deleted once the file that supersedes it has been archived.
 - `urbanbio purge --retrieval R --discard UNIT [--discard UNIT …]` deletes named flagged files
   without archiving them (for example, `outside_deployment` test recordings). The discard and
   the operator's stated `--reason` are recorded in the purge run. Discarded files are never
   written to the store or anywhere else.
-- `--discard PATH` does the same for a device file recorded in a `unexpected_audio` anomaly
+- `--discard PATH` does the same for a device file recorded in an `unexpected_audio` anomaly
   ([archive](../../archive/archive-design.md) § Archive Flow, Device files), named by its
   manifest path. Device files aren't ledger units, so the purge run record lists each discarded
   path with the operator's reason.
@@ -273,7 +274,7 @@ all of these hold:
 1. every audio file in the retrieval's part manifests is archived and verified in the store,
    superseded by an archived copy, or discarded by the operator;
 2. every device log, diagnostics file, and unknown file in the part manifests is in the store
-   under the retrieval's prefix, or, when recorded in a `unexpected_audio` anomaly, discarded by
+   under the retrieval's prefix, or, when recorded in an `unexpected_audio` anomaly, discarded by
    the operator (`urbanbio purge --retrieval R --discard PATH`, by manifest path);
 3. the store is not on the same filesystem as `paths.quarantine`
    ([store](../../store/store-design.md) § Same-Filesystem Rule). This always holds on the `s3`
@@ -288,7 +289,8 @@ When any of these fails, it prints the reason instead. Until then, the card is t
 hard-links chosen originals into `quarantine/speech-labeling/` after screening and before
 archive, so the sample is taken before any purge. `urbanbio process --speech-sample N` does
 this as part of the pipeline. Archive skips held files, so speech a labeler finds goes into the
-file's first mask instead of reaching the store. `speech label --import` releases the holds;
+file's first mask instead of reaching the store. `speech label --import` releases the holds,
+removing each hold's hard link from `quarantine/speech-labeling/`;
 the next `urbanbio archive --retrieval R` archives the released files with any `manual` speech
 events and purges them. Until then, the retrieval isn't safe to wipe. A hold older than 30 days
 is reported by `retrieval status`.

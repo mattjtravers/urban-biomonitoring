@@ -86,8 +86,9 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
 - **System of record:** the configured **store** (§5.5), AWS S3 by default. The processing
   host's local disk holds only working copies and the quarantine (§5.1); losing that host loses
   nothing authoritative. Keeping the store durable is the operator's responsibility.
-- **Idempotency:** every stage is keyed by content checksums and run IDs. Re-running a stage
-  on the same inputs is a no-op unless parameters or versions change.
+- **Idempotency:** every stage unit is keyed by its input checksums, parameters, and stage and
+  model versions. Re-running a stage on the same inputs is a no-op unless parameters or versions
+  change.
 - **Provenance:** every stage writes a run record (inputs, outputs, code commit, model and
   parameter versions).
 

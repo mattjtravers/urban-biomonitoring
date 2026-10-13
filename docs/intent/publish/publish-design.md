@@ -28,7 +28,7 @@ class Exporter(Protocol):
 class ClipPublisher(Protocol):
     def candidates(self, detections: Table) -> Table: ...      # detections_current; never overlaps_current_mask; calibrated taxa only
     def recheck(self, clip: MaskedClip) -> SpeechCheckResult: ...  # second speech check (HLD §3.6)
-    def withdraw(self, detection_ids: Sequence[str]) -> None: ...  # omit clips the archive deleted after a re-mask
+    def withdraw(self, detection_ids: Sequence[str]) -> None: ...  # omit clips with a clip_withdrawals row
 
 class SiteBuilder(Protocol):
     def build(self, export_dir: Path, out_dir: Path) -> Path: ...  # static site with DuckDB-WASM
@@ -48,8 +48,10 @@ Policy the specs will encode:
   Silero ≥ 0.20). Any hit rejects the clip. Clips carry no metadata tags.
 - **Withdrawal.** A re-mask deletes every clip that overlaps the newly masked intervals from
   `clips/` (the pipeline's only delete permission;
-  [archive](../archive/archive-design.md) § Re-masking). The next release omits those clips,
-  so they leave the published site.
+  [archive](../archive/archive-design.md) § Re-masking) and records it in `clip_withdrawals`.
+  The next release publishes only live clips
+  ([data-model](../data-model/data-model-design.md) § Clip), so withdrawn clips leave the
+  published site.
 
 ## Darwin Core Mapping
 

@@ -69,9 +69,13 @@ refused.
    No parser opens a file before its hash is recorded.
 2. **Register the retrieval and part.** Allocate the next `retrieval_id` for the deployment as
    part `01`, or, with `--retrieval R`, add the next part number to an existing retrieval (a
-   card copied in parts). Write `manifest-part<NN>.json` and move `PATH` to
-   `<retrieval_id>/card/part<NN>/` (a rename on the same filesystem). A file whose path and
-   SHA-256 already appear in an earlier part's manifest is recorded as a duplicate and skipped.
+   card copied in parts). Allocation reads the retrieval prefixes already in the store. Write
+   `manifest-part<NN>.json`, which records the part's `<label>` with the paths, sizes, and
+   checksums (no audio content), to the quarantine and to the store under the retrieval's prefix.
+   Only then move `PATH` to `<retrieval_id>/card/part<NN>/` (a rename on the same filesystem). The
+   manifest in the store is the part's registration: a crash after this step loses nothing the
+   next run needs. A file whose path and SHA-256 already appear in an earlier part's manifest is
+   recorded as a duplicate and skipped.
 3. **Classify** the card with the deployment's adapter (`list_media`). Unknown files are
    recorded as an `unknown_file` anomaly and left in place.
 4. **Per audio file** (one unit each):
@@ -102,7 +106,16 @@ refused.
    recorded offset. Each row is converted with the offset of the audio files from the same
    power-on session (the files whose start times fall within the session), falling back to the
    deployment's `schedule.utc_offset_minutes`.
-6. **Write** `media_retrievals` and `audio_files` rows and the ingest ledger.
+6. **Write** `audio_files` rows and ingest ledger rows batch by batch as files finish
+   ([runs](../../runs/runs-design.md) § Write Order), and the part's `media_retrievals` row when
+   the run ends (a run-level table; [runs](../../runs/runs-design.md) § Current Rows).
+
+**Resuming.** Step 2 moves `PATH`, so re-running the same command after a crash finds no
+`incoming/<label>`. Ingest then looks for a registered part, still in the quarantine, of the same
+deployment whose manifest records that `<label>`. Exactly one match resumes that part: steps 3–6
+run again, the ledger skips completed files, and the `media_retrievals` row is computed over every
+file in the part. No match, or more than one, is a `ConfigError` naming the candidates. The same
+applies to `urbanbio process`, whose later stages resume through their own ledgers.
 
 ## Time Normalization
 
@@ -211,7 +224,10 @@ current usage, the budget, and the free space.
 ## Purge
 
 Purge deletes an original from the quarantine. The archive stage calls it for each batch of
-files right after that batch's ledger rows are written to the store. `urbanbio purge --retrieval R` sweeps up anything left (files archived with
+files right after that batch's ledger rows are written to the store. Each deletion is a `purge`
+unit: the file is deleted first, and the purge ledger rows follow in the next batch write. A
+purge unit whose original is already gone, and whose archive success is in the store, is
+recorded as `succeeded` ([runs](../../runs/runs-design.md) § Write Order). `urbanbio purge --retrieval R` sweeps up anything left (files archived with
 `--no-purge`, superseded files, device logs, released speech-labeling holds). An original is
 deleted when all of these hold:
 
@@ -221,6 +237,8 @@ deleted when all of these hold:
    process doesn't count ([runs](../../runs/runs-design.md) § Write Order).
 2. The file isn't held for speech labeling.
 3. The file isn't flagged at any stage.
+4. Its current archive success didn't come from a run with uncommitted code
+   ([runs](../../runs/runs-design.md) § Run Record).
 
 Two exceptions remove flagged originals:
 
@@ -229,20 +247,24 @@ Two exceptions remove flagged originals:
   without archiving them (for example, `outside_deployment` test recordings). The discard and
   the operator's stated `--reason` are recorded in the purge run. Discarded files are never
   written to the store or anywhere else.
+- `--discard PATH` does the same for a device file recorded in a `unexpected_audio` anomaly
+  ([archive](../../archive/archive-design.md) § Archive Flow, Device files), named by its
+  manifest path. Device files aren't ledger units, so the purge run record lists each discarded
+  path with the operator's reason.
 
-Device logs and diagnostics are purged once archived. When only the part manifests remain, they
-are written to the retrieval's prefix in the store and the retrieval directory is deleted.
+Device logs and diagnostics are purged once they are in the store. When only the part manifests
+remain (already in the store since registration), the retrieval directory is deleted.
 
 ## Card Wipe Readiness
 
 `urbanbio retrieval status R` reports per-file state and prints **safe to wipe** only when
-both hold:
+all of these hold:
 
 1. every audio file in the retrieval's part manifests is archived and verified in the store,
    superseded by an archived copy, or discarded by the operator;
 2. every device log, diagnostics file, and unknown file in the part manifests is in the store
-   under the retrieval's prefix, or, when flagged `unexpected_audio`, discarded by the operator
-   (`urbanbio purge --retrieval R --discard PATH`, by manifest path);
+   under the retrieval's prefix, or, when recorded in a `unexpected_audio` anomaly, discarded by
+   the operator (`urbanbio purge --retrieval R --discard PATH`, by manifest path);
 3. the store is not on the same filesystem as `paths.quarantine`
    ([store](../../store/store-design.md) § Same-Filesystem Rule). This always holds on the `s3`
    backend. On the `filesystem` backend, a store on the quarantine's filesystem means wiping the
@@ -277,6 +299,7 @@ purged with them.
 | Files outside the deployment window | Flag; archive or discard only by operator decision | Archive everything on the card | Pre-deployment test recordings are often made indoors near people (Tenet 1). |
 | Re-copied files | The copy that passes all checks supersedes the other | Keep both; keep the newest | Only one copy of a recording should reach the archive, and "passes the checks" is verifiable where "newest" is not. |
 | Cards copied in parts | Numbered parts, each with its own directory and manifest | One `card/` directory and manifest per retrieval, merged on each part | A merge rewrites a manifest that earlier MediaRetrieval rows and the store's copy already cite. |
+| Retrieval registration | Part manifest written to the store before `PATH` is moved; resume by label | Register at the end of the run; require the operator to name the moved path | A crash would otherwise lose the allocated `retrieval_id`, and the documented recovery (re-run the same command) would fail because `PATH` is gone. |
 | Held files | Not archived until their labels are imported | Archive with the rest and re-mask after labeling | A miss a labeler finds would otherwise already be in the store (Tenet 1); held originals stay in the quarantine anyway, so waiting costs nothing. |
 
 ## Open Questions & Future Decisions

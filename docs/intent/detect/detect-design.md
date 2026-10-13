@@ -98,9 +98,12 @@ the acoustic model.
 
 `urbanbio detect --retrieval R` or `--all-pending`:
 
-1. Units: every (file, current mask version, `model_id`) whose detect idempotency key
-   (inputs = `masked_sha256`; models = acoustic and geo model file hashes; params) has no
-   ledger row ([runs](../runs/runs-design.md)).
+1. Units: every (file, `model_id`) whose detect idempotency key has no `succeeded` row
+   ([runs](../runs/runs-design.md)). The key's inputs are the file's `original_pcm_sha256`, not
+   the masked checksum, with models = acoustic and geo model file hashes and params. A re-mask
+   therefore doesn't make a file pending: it only zeroes windows that `overlaps_current_mask`
+   already excludes, and the windows outside it hold identical samples. A unit that does run
+   analyzes the file's current mask version and records it in `mask_version`.
 2. For each batch of up to 50 units ([runs](../runs/runs-design.md) § Write Order), taken in
    order of deployment and file start: use the work-directory FLAC left by archive
    if its SHA-256 matches `masked_sha256`; otherwise fetch it from the store to the work directory
@@ -133,13 +136,13 @@ wall-clock time and peak memory.
   BirdNET V3.0 through the same library) is a new `model_id`. It writes its own partition, and
   earlier partitions are untouched.
 - Re-running the same model after a parameter change produces new detections under a new
-  `run_id` in the same `model_id` partition. A re-mask makes each affected file a new unit
-  (its new mask version), so detect re-runs it.
+  `run_id` in the same `model_id` partition. A re-mask doesn't re-run detect (step 1).
 - **Current detections** are chosen per unit, not per run: for each file and `model_id`, the
-  rows of the latest run that succeeded on the file's current mask version
+  rows of the latest succeeded run on that file, whichever mask version it analyzed
   ([runs](../runs/runs-design.md) § Current Rows). The `detections_current` view applies this
   and adds `overlaps_current_mask` ([data-model](../data-model/data-model-design.md)
-  § Detection). Queries that need an older run select it by `run_id`.
+  § Detection), which excludes windows a later mask covers. Queries that need an older run
+  select it by `run_id`.
 - Reprocessing older audio reads Glacier IR objects directly (no restore). Cost and pacing
   are covered in [archive](../archive/archive-design.md) § Cost.
 
@@ -153,6 +156,7 @@ wall-clock time and peak memory.
 | Location/date filter | Flag (`in_geo_list`) | Filter at prediction time (`custom_species_list`) | Filtering would drop the non-target noise classes (HLD §3.3) and make the filter irreversible. |
 | Window overlap | 0 s | 1.5 s | Non-overlapping windows keep counts simple (each 3 s of audio is scored once). Overlap is used in the speech screen, where recall matters more. |
 | Input | Archived masked FLAC | Unmasked quarantine audio | HLD §3.3: detect runs on masked audio, so results reproduce exactly from the archive. |
+| Re-detect after a re-mask | No; covered windows excluded by `overlaps_current_mask` | Re-run detect on every new mask version | Outside the new mask the samples are identical, so a re-run reproduces the same detections at the cost of Glacier IR retrieval and transfer, and leaves the file without current detections until it runs. |
 
 ## Open Questions & Future Decisions
 

@@ -87,7 +87,9 @@ needn't download it. Detect then deletes it.
 verbatim to the store under the retrieval prefix ([store](../store/store-design.md) § Key
 Layout), after a content check: any file whose header
 identifies it as audio (RIFF/WAVE, FLAC, Ogg, MP3) and wasn't processed as an audio file is
-flagged `unexpected_audio` and **not written to the store**.
+**not written to the store**. Device files aren't ledger units, so it is recorded as a retrieval
+`unexpected_audio` anomaly naming its manifest path, and the card isn't safe to wipe until the
+operator discards it ([intake](../ingest/intake/intake-design.md) § Purge).
 
 ## Header Sidecar
 
@@ -129,12 +131,22 @@ mask version:
   key, which the store accepts only because the mask version is higher
   ([store](../store/store-design.md) § Store Interface). The sidecar is unchanged, and there's
   no original to purge.
-- **Clips are withdrawn.** Every object under `clips/` cut from this file whose window
-  (including its context) overlaps an interval the new mask adds is deleted, whether it was
-  cut for review or published. Clips cut from earlier mask versions can hold the speech the new
-  mask removes, so they get the same treatment as the earlier FLAC. Their detections stay
-  reviewable only through a clip cut again from the new version, and
-  [publish](../publish/publish-design.md) omits withdrawn clips from the next release.
+- The re-mask runs inside a `rescreen` run, so step 8's records belong to the `rescreen` unit
+  (`audio_file_id` + the mask version re-screened; [runs](../runs/runs-design.md) § Units and
+  Idempotency Keys): the new AudioMaskVersion row and the new `speech_events` rows are written
+  in that run's batch, and the unit's ledger row cites them in `output_refs`. Archive writes no
+  `archive` ledger row for a re-mask. `audio_mask_versions_current` counts rows cited by a
+  succeeded `archive` unit (first versions) or `rescreen` unit (later versions).
+- **Clips are withdrawn.** Every clip in the `clips` table cut from this file whose window
+  (including its context) overlaps an interval the new mask adds, and that isn't already
+  withdrawn, is deleted from `clips/`, whether it was cut for review or published, and a
+  `clip_withdrawals` row records it ([data-model](../data-model/data-model-design.md) § Clip).
+  Clips cut from earlier mask versions can hold the speech the new mask removes, so they get the
+  same treatment as the earlier FLAC. Their detections stay reviewable only through a clip cut
+  again from the new version, and [publish](../publish/publish-design.md) omits withdrawn clips
+  from the next release. Withdrawal rows are written with the unit's other outputs, before its
+  ledger row; if a crash leaves a clip deleted but unrecorded, the next run finds the object
+  already gone and records the withdrawal.
 - The previous masked version contains speech the new mask removes, so the store keeps no copy
   of it (Tenet 1). On `s3`, bucket versioning is disabled; on `filesystem`, the new file
   replaces the old one by rename ([store](../store/store-design.md)). Copies outside the store's

@@ -30,7 +30,7 @@ Intake calls the adapter. The adapter never touches the store, the ledger, or ot
 ```python
 class RecorderAdapter(Protocol):
     key: ClassVar[str]                  # e.g. "songmeter-micro2"
-    version: ClassVar[int]              # bumps when parsing output changes (feeds stage_version)
+    version: ClassVar[int]              # bumps when parsing output changes; part of ingest's idempotency key
 
     def list_media(self, root: Path) -> MediaListing:
         """Classify every file under root as audio, device log, diagnostic, or unknown."""

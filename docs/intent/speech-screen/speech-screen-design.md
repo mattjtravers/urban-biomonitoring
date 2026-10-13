@@ -147,13 +147,19 @@ releases the holds. Playback is local, on the processing host, for listening onl
 saved outside the quarantine.
 
 **Metrics** (`urbanbio speech recall`), per stratum and weighted to the population with
-stratum sizes:
+stratum sizes. Recall measures the detectors, so it is computed against the **detector mask**:
+the padded union of the file's `birdnet-human` and `silero-vad` events only. `manual` events
+from labeling are excluded, even though they are part of the archived mask, because counting
+them would score every miss a labeler found as caught.
 
 - **Event recall:** labeled speech intervals with at least 90% of their duration inside the
-  mask, divided by all labeled intervals. Reported with a Wilson 95% interval.
-- **Time recall:** labeled speech seconds inside the mask, divided by labeled speech seconds.
-- **Masked fraction:** masked seconds divided by recorded seconds (the cost).
-- Contribution of each detector (events found by A only, B only, both).
+  detector mask, divided by all labeled intervals. Reported with a Wilson 95% interval.
+- **Time recall:** labeled speech seconds inside the detector mask, divided by labeled speech
+  seconds.
+- **Masked fraction:** masked seconds divided by recorded seconds (the cost), over the archived
+  mask, which includes `manual` events.
+- Contribution of each detector (labeled intervals caught by A only, B only, both), also
+  without `manual` events.
 
 **Target:** event recall ≥ 0.98, judged on the lower bound of the 95% interval, after the first
 four retrievals. Below target, thresholds and padding are retuned (HLD T5) and affected
@@ -200,6 +206,7 @@ first real card**. The run records units per second and its `resources`.
 | Thresholds (T5) | BirdNET 0.10; Silero 0.30; padding ±2 s | Library defaults (BirdNET 0.25–0.5; Silero 0.5) | Recall-first starting points, tuned with measured recall and masked fraction. |
 | Mask representation | Zeroed samples in place | Cut segments out; replace with noise | Zeros keep timing (HLD §3.2), are exactly reproducible, and compress well in FLAC. |
 | Masking types | `QuarantinedAudio` → `MaskedAudio`, constructed only by `apply_mask` | A boolean "masked" flag on a shared type | Makes "unmasked audio never leaves quarantine" a property of the API rather than a convention. |
+| Recall reference mask | Detector events only | The archived mask, including `manual` events | Labeled misses become `manual` events in the first mask, so the archived mask would report them as caught. |
 | Labeled sample storage | Labels (intervals) in a table; audio stays in quarantine and is purged after labeling | Keep a labeled speech corpus | A stored speech corpus would itself violate G3. |
 
 ## Open Questions & Future Decisions

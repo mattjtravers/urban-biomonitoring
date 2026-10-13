@@ -31,8 +31,8 @@ A **unit** is the smallest piece of work a stage can skip or redo:
 | speech-label | one held audio file | `audio_file_id` |
 | archive | one mask version of an audio file | `audio_file_id` + `mask_version` (1 at first archive) |
 | purge | one audio file | `audio_file_id` |
-| detect | one archived audio file under one model | `audio_file_id` + `mask_version` + `model_id` |
-| rescreen | one archived audio file | `audio_file_id` + `mask_version` |
+| detect | one archived audio file under one model | `audio_file_id` + `model_id` |
+| rescreen | one archived audio file at its current mask version | `audio_file_id` + `mask_version` (the version re-screened) |
 | admin | one deployment change | `deployment_id` |
 
 The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
@@ -42,12 +42,15 @@ The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
   "stage": "detect",
   "stage_version": 1,
   "unit_id": "af-3f9a0c1d2e4b5a6c",
-  "input_checksums": ["<masked_sha256>"],
+  "input_checksums": ["<original_pcm_sha256>"],
   "params_hash": "<sha256 of canonical params>",
   "models": ["birdnet-acoustic-2.4-fp32:<model file sha256>"]
 }
 ```
 
+- `models` lists every versioned component whose output the stage depends on: model files for
+  `screen`, `detect`, and `rescreen`, and the recorder adapter (`adapter:<key>:<version>`) for
+  `ingest`.
 - `stage_version` is an integer constant in each stage's module. It increments when a code
   change alters that stage's outputs. Other code changes leave keys unchanged, so a refactor
   doesn't trigger reprocessing; the git commit is still recorded in the run.
@@ -75,6 +78,7 @@ per unit attempt:
 | `waived_reason_codes` | `list[str]` | no | Checks waived for this attempt; usually empty |
 | `related_unit_id` | `str` | yes | E.g. the superseding file for `superseded` |
 | `output_refs` | `list[str]` | no | Store keys or table/file references |
+| `git_dirty` | `bool` | no | Copied from the run record (§ Run Record) |
 | `finished_utc` | `datetime` | no | |
 
 The two non-success statuses mean different things:
@@ -111,6 +115,11 @@ If a run crashes:
 - after the ledger part is written but before local cleanup, the next run finds the units
   `succeeded` and only repeats the cleanup (purge and work-directory sweeps are idempotent).
 
+Purge is the one stage whose output is a local action. It deletes first and then writes its own
+ledger rows in the next batch write; a purge unit whose original is already gone, and whose
+archive success is in the store, is recorded as `succeeded`, so a crash between the deletion and
+the ledger write repairs itself ([intake](../ingest/intake/intake-design.md) § Purge).
+
 So no original is ever purged, and no work FLAC deleted, before the store records the outputs
 that justify it, and a crash never yields duplicate rows that readers count.
 
@@ -127,13 +136,23 @@ Run status doesn't enter the rule. A run that ends `partial` because some units 
 still produces current rows for every unit that succeeded; a run that crashed (`running`
 forever) does too, for every batch whose ledger part was written.
 
+**Run-level tables.** A few tables hold rows about a run or a retrieval rather than about one
+unit: `media_retrievals`, `geo_species_lists`, `sites`, and `runs`. Each is written once, when the
+run ends. Its rows count when the run's record has ended (any status other than `running`). A
+crashed run's run-level rows are never written or are ignored, and the run that resumes the work
+writes them again, computed over the whole scope (for `media_retrievals`, every file of the part,
+including those an earlier run completed).
+
 ## Lookups
 
 Two lookups read the ledger:
 
 - **By key, to skip work.** Before executing a unit, a stage looks up
-  `(stage, idempotency_key)`. A `succeeded` row means skip. A `flagged` row means skip, unless a
-  waiver covers it (below). A `failed` row, or no row, means run.
+  `(stage, idempotency_key)`. A `succeeded` row means skip, except as below. A `flagged` row
+  means skip, unless a waiver covers it (below). A `failed` row, or no row, means run.
+  A run from committed code (`git_dirty: false`) treats a `succeeded` row with `git_dirty: true`
+  as no row and runs the unit again when its input is still reachable, so results from
+  uncommitted code are replaced at the next clean run (§ Run Record).
 - **By file, for status.** The `audio_file_status` view takes, for each `audio_file_id`, the
   latest row of each stage across all keys and reports the furthest stage reached (see
   [data-model](../data-model/data-model-design.md) § AudioFile). Ingest's duplicate check,
@@ -181,9 +200,19 @@ and rewritten at the end. Its summary row goes to the `runs` table.
 A run started with uncommitted changes in the working tree records `git_dirty: true`. In
 the `dev` profile, such runs are allowed. In the `processing` profile, every command that creates
 a run refuses to start with uncommitted changes (a `ConfigError`, exit `3`), so real media is
-processed only by code that is committed and has been through CI. `--allow-dirty` overrides the refusal for one
-command, and the run still records `git_dirty: true`. Publish refuses to use outputs from dirty
-runs in any profile ([publish](../publish/publish-design.md)).
+processed only by code that is committed and has been through CI. `--allow-dirty` overrides the
+refusal for one command, and the run still records `git_dirty: true`. Publish refuses to use
+outputs from dirty runs in any profile ([publish](../publish/publish-design.md)).
+
+Results from a dirty run must stay replaceable, so in the `processing` profile:
+
+- `--allow-dirty` implies `--no-purge` for `archive` and `process`, and purge refuses to delete an
+  original whose current archive success came from a dirty run. The originals stay in the
+  quarantine until a clean run has re-run `screen` and `archive` on them.
+- A clean run re-runs every unit whose current success came from a dirty run, when its input is
+  still reachable (§ Lookups). If a clean `archive` produces different samples from the dirty
+  run's archived object, the unit is flagged `archive_conflict`, which the operator resolves with
+  the administrator identity ([archive](../archive/archive-design.md) § Archive Flow).
 
 **Public-safe parameters.** Run parameters may contain generalized coordinates but never exact
 ones. The configuration layer never exposes exact coordinates to stages
@@ -253,6 +282,7 @@ The software's part is to make every interruption safe:
 | Persist order | Outputs, then ledger, then local cleanup, per batch | Purge each original as soon as its write is confirmed; ledger at end of run | Purging before the ledger is in the store can delete an original whose archival the store can't show, leaving a retrieval that can never be confirmed safe to wipe. |
 | Duplicate rows after a crash | Rows count only when cited by a succeeded ledger row | Deterministic, run-independent file names that a retry overwrites | Run IDs are per execution, so names can't repeat across a retry without overwriting objects; ledger citation needs no overwrite and also covers a crash between output and ledger writes. |
 | Which rows are current | Latest succeeded run per unit | Latest succeeded run per stage or model | Runs cover one retrieval or a pending set, so a per-run choice would select only part of the data; partial runs are normal when any unit is flagged. |
+| Dirty-run results | Re-run by the next clean run; originals kept until then | Put `git_dirty` in the idempotency key; accept dirty results permanently | Keying on dirtiness would also re-run clean results after a dirty run. Without a re-run, outputs from a dirty run could never be published, and once originals were purged they could never be redone. |
 | Flagged units | Stay skipped until explicitly cleared | Retry automatically on the next run | Tenet 3: a unit that failed verification needs a human decision, not silent retries. |
 | Memory bounding | Configured worker count with a conservative default, one file per worker | Workers equal to the detected CPU count; a memory-aware scheduler | On a small host without swap, one worker per core can exhaust memory and get the run killed. A scheduler is complex for one host. A configured count is predictable and follows Tenet 5. |
 

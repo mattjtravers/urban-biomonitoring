@@ -116,6 +116,7 @@ min_free_gb = 3.0                  # Refuse to start work below this
 [store]                            # Store backend (store LLD)
 backend = "s3"
 region = "us-east-1"
+glacier_transition_days = 30       # Must equal the bucket's lifecycle rule
 ```
 
 ```toml

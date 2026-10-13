@@ -190,6 +190,9 @@ makes a network call to a store, so the job needs none.
 ### Deferred
 1. Support for arm64 Linux and for macOS, each with its own CI target.
 2. A per-worker memory figure for the sizing guidance, from the first real card's run records.
+3. **TODO: check when writing the installer:** whether `libsndfile1` is needed at all, since
+   the `soundfile` Linux wheels bundle libsndfile. If not, drop it from
+   `scripts/system-packages.txt` and record the bundled version in run records instead.
 
 ## References
 

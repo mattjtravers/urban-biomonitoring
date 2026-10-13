@@ -148,8 +148,8 @@ from `audio_files`, time spans and battery values take the minimum or maximum ac
 anomalies are concatenated.
 
 `Anomaly`: `code: str` (e.g. `gap`, `reboot`, `file_count_mismatch`, `low_battery`,
-`clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `summary_unparseable`,
-`high_masked_fraction`), `start_utc: datetime | None`, `end_utc: datetime | None`,
+`clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `unexpected_audio`,
+`summary_unparseable`, `high_masked_fraction`), `start_utc: datetime | None`, `end_utc: datetime | None`,
 `detail: str`.
 
 ### AudioFile
@@ -256,6 +256,30 @@ detection's window is covered by the file's **current** mask is a separate, deri
 Every consumer that excludes masked windows (validate, curate, publish) uses
 `overlaps_current_mask`.
 
+### Clip
+
+A short excerpt of archived masked audio, stored privately at `clips/<detection_id>.flac` for
+review ([validate](../validate/validate-design.md)) and, when approved, publication
+([publish](../publish/publish-design.md)). One row per clip written; a clip cut again after a
+withdrawal gets a new row.
+
+| Field | Type | Null | Unit / notes |
+|---|---|---|---|
+| `detection_id` | `str` | no | FK → Detection; also the clip's key |
+| `audio_file_id` | `str` | no | FK → AudioFile |
+| `mask_version` | `int` | no | Mask version the clip was cut from |
+| `start_s` | `float` | no | Clip start in the file, including context |
+| `end_s` | `float` | no | Clip end in the file, including context |
+| `clip_sha256` | `str` | no | Bytes of the clip object |
+| `run_id` | `str` | no | FK → Run that cut it |
+| `created_utc` | `datetime` | no | |
+
+`ClipWithdrawal`: `detection_id`, `clip_sha256` (the withdrawn object), `reason:
+Literal["remask"]`, `mask_version` (the version whose new mask overlaps it), `run_id`,
+`withdrawn_utc`. A clip is live when its latest `clips` row has no withdrawal with the same
+`clip_sha256`. The re-mask flow ([archive](../archive/archive-design.md) § Re-masking) finds
+overlapping clips through this table and withdraws them.
+
 ### Label, Calibration, WeatherObs, NoiseEvent, DailySummary
 
 These are defined at interface level for Phase 1; their stages are specified in
@@ -292,6 +316,7 @@ erDiagram
   AudioFile ||--o{ Detection : "analyzed into"
   AudioFile ||--o{ NoiseEvent : "has"
   Detection ||--o{ Label : "reviewed as"
+  Detection ||--o{ Clip : "cut as"
   Calibration }o--o{ Label : "fit from"
   Site ||--o{ DailySummary : summarizes
   Run ||--o{ Detection : produced
@@ -325,6 +350,8 @@ a crashed batch are ignored, and a retry never produces rows that are counted tw
 | `detections` | `curated/detections/` | `model_id=`, `site_id=`, `year_month=` | detect run × batch |
 | `geo_species_lists` | `curated/geo_species_lists/` | `model_id=` | detect run |
 | `runs` | `curated/runs/` | `stage=` | run |
+| `clips` | `curated/clips/` | `site_id=` | run × batch that cuts clips |
+| `clip_withdrawals` | `curated/clip_withdrawals/` | `site_id=` | rescreen run × batch |
 | `stage_units` | `curated/stage_units/` | `stage=` | run × batch (see [runs](../runs/runs-design.md)) |
 
 `year_month` is the UTC `YYYY-MM` of the file start. Interface-level tables (`labels`,
@@ -343,7 +370,11 @@ QUALIFY row_number() OVER (PARTITION BY audio_file_id ORDER BY mask_version DESC
 ```
 
 `detections_current` holds, for each (`audio_file_id`, `model_id`), the rows of the latest
-succeeded detect run on the file's current mask version, with `overlaps_current_mask` added.
+succeeded detect run on that file, whichever mask version it analyzed, with
+`overlaps_current_mask` added. A re-mask therefore leaves a file's detections in place; the
+windows it covers drop out through `overlaps_current_mask`. Run-level tables (`media_retrievals`,
+`geo_species_lists`, `sites`, `runs`) follow the run-level rule in
+[runs](../runs/runs-design.md) § Current Rows.
 
 ## Querying with DuckDB
 

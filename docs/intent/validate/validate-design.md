@@ -43,7 +43,8 @@ class AgreementAnalyzer(Protocol):
 
 Review clips are cut from the **current version of the archived masked audio** around each
 detection (the 3 s window plus 1.5 s of context each side) and stored privately at
-`clips/<detection_id>.flac`. A re-mask that overlaps a clip deletes it
+`clips/<detection_id>.flac`, with a row in the `clips` table
+([data-model](../data-model/data-model-design.md) § Clip). A re-mask that overlaps a clip deletes it
 ([archive](../archive/archive-design.md) § Re-masking); a later review cuts it again from the new
 version. `unsure`
 labels are excluded from fitting. A calibration needs at least `min_labels` (default 50, at

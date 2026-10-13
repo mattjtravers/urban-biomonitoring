@@ -6,17 +6,42 @@ readme = "README.md"
 license = "MIT"
 # birdnet runs the V2.4 model on LiteRT (ai-edge-litert), which publishes wheels for CPython <= 3.13.
 requires-python = ">=3.12,<3.14"
-dependencies = []
+dependencies = [
+    "birdnet==1.1.1",
+    "silero-vad==6.2.3",
+    "torch",
+    "soundfile",
+    "scipy",
+    "numpy",
+    "pydantic>=2",
+    "typer>=0.19",
+    "boto3",
+    "pyarrow",
+    "duckdb",
+]
+
+[project.scripts]
+urbanbio = "urbanbio.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.13",
+    "moto[s3]",
 ]
 
-[tool.uv]
-# No importable package yet; src/urbanbio/ arrives with the first approved requirements.
-package = false
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+# CPU-only wheels: the default Linux torch wheel pulls several GB of CUDA libraries.
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

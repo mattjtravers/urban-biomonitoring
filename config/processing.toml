@@ -1,0 +1,21 @@
+# Processing-profile defaults: deployment tables only (config-cli LLD § Configuration).
+# Override per host in an operator config file named by URBANBIO_CONFIG, outside the repository.
+
+[paths]                            # `~` is expanded; no username is committed
+quarantine = "~/urbanbio/quarantine"
+work = "~/urbanbio/work"           # Masked FLAC staging and downloads
+state = "~/urbanbio/state"         # Lock file, logs
+model_cache = "~/.cache/urbanbio/birdnet"     # Exported as BIRDNET_APP_DATA
+test_audio_cache = "~/.cache/urbanbio/test-audio"
+
+[resources]                        # Worker count for audio stages (runs LLD)
+workers = 2                        # Sized for 8 GB of RAM (install LLD § Sizing guidance)
+
+[quarantine]                       # Disk budget (intake LLD § Disk Budget)
+budget_gb = 35.0                   # Quarantine + work may use at most this
+min_free_gb = 3.0                  # Refuse to start work below this
+
+[store]                            # Store backend (store LLD)
+backend = "s3"
+region = "us-east-1"
+glacier_transition_days = 30       # Must equal the bucket's lifecycle rule

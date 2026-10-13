@@ -1,0 +1,19 @@
+# Dev-profile defaults: deployment tables only (config-cli LLD § The dev profile).
+
+[paths]
+quarantine = "~/urbanbio-dev/quarantine"   # Synthetic audio only
+work = "~/urbanbio-dev/work"
+state = "~/urbanbio-dev/state"
+model_cache = "~/.cache/urbanbio/birdnet"
+test_audio_cache = "~/.cache/urbanbio/test-audio"
+
+[resources]
+workers = 1
+
+[quarantine]
+budget_gb = 5.0                    # Synthetic data only
+min_free_gb = 3.0
+
+[store]
+backend = "filesystem"
+root = "~/urbanbio-dev/store"

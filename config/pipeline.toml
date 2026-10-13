@@ -1,0 +1,41 @@
+# Stage parameters, identical in every profile (config-cli LLD § Configuration).
+# Deployment tables ([paths], [resources], [quarantine], [store]) don't belong here.
+
+[recording]                        # Defaults for new deployments
+sample_rate_hz = 48000
+duty_on_s = 60
+duty_off_s = 240
+max_file_length_s = 60
+
+[ingest.songmeter_micro2]
+low_battery_v = 4.2                # Low-battery anomaly threshold
+
+[screen]
+padding_s = 2.0
+birdnet_mask_labels = ["Human vocal_Human vocal"]
+birdnet_threshold = 0.10
+birdnet_stats_floor = 0.02         # Scores kept for per-file maxima (near-miss sampling)
+birdnet_overlap_s = 1.5
+silero_threshold = 0.30
+silero_min_speech_ms = 250
+max_masked_fraction = 0.20         # Above this, the retrieval gets an anomaly
+
+[detect]                           # Library parameter names: detect LLD § BirdNET Implementation
+model = "birdnet-acoustic-2.4"
+backend = "litert"
+precision = "fp32"
+confidence_floor = 0.10
+top_k = "none"                     # Every class above the floor
+overlap_s = 0.0
+sigmoid_sensitivity = 1.0
+bandpass_fmin_hz = 0
+bandpass_fmax_hz = 15000
+geo_model = "birdnet-geo-2.4"
+geo_min_confidence = 0.03
+
+[archive]
+flac_compression_level = 0.6       # soundfile scale 0–1; lossless at any level
+
+[publish]
+coordinate_precision_deg = 0.01
+coordinate_uncertainty_m = 1000

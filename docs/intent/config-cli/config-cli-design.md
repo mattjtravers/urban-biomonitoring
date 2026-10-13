@@ -58,8 +58,9 @@ config/
 Module boundaries follow the HLD components. `models`, `storage`, `provenance`, and `config`
 are shared. A stage package imports shared packages and never another stage's internals.
 `storage.archive` imports `screen.mask` for the masking primitive, the only sanctioned
-cross-stage import. `cli.py` isn't a stage: it imports each stage's entry point and nothing
-below it.
+cross-stage import. `cli.py` isn't a stage: it imports each stage's entry point from the stage
+package itself (`from urbanbio.ingest import …`), which re-exports it, and never imports a stage's
+submodules.
 
 ## Configuration
 
@@ -292,13 +293,22 @@ In `dev`, it also fails when `URBANBIO_SITES` is set.
 In `processing` with the `filesystem` backend, it also fails when `store.root` is on the same
 filesystem as `paths.quarantine` ([store](../store/store-design.md) § Same-Filesystem Rule).
 
+`config.check()` runs the checks and returns one result per check, with a `name`, a `status`
+(`ok`, `fail`, or `warn`), a `message`, and a `fix`; the command prints them. The check names are
+`profile`, `layers`, `operator_config`, `private_vars`, `sites`, `coordinate_like`,
+`paths_outside_repo`, `directories`, `store`, `same_filesystem`, `dev_private_sites`, and
+`workers`.
+
 Each failure prints the check and the fix, and never prints the value of a private variable.
 The command exits `3` on any failure. It warns, without failing, when `resources.workers` exceeds the CPU count the
 host reports ([runs](../runs/runs-design.md) § Resource Limits).
 
 ### Loading and the private boundary
 
-`config.load()` returns a `PipelineConfig` (public fields plus `sites: list[Site]`). Private
+`config.load(*, with_sites: bool)` returns a `PipelineConfig` (public fields plus
+`sites: list[Site] | None`). `with_sites` has no default, so every caller states whether it
+reads site configuration (CLI-PRIV-007); without it, `sites` is `None`, so code that needs sites
+and didn't load them fails at once instead of seeing an empty list. Private
 `SiteSecret` objects (with exact coordinates) are held only by a private registry inside the
 `urbanbio.config` module. `PipelineConfig` has no attribute through which exact coordinates can
 be reached. Stages get two kinds of derived values and nothing else:
@@ -308,7 +318,9 @@ be reached. Stages get two kinds of derived values and nothing else:
   which returns the distance in meters from the site's exact position to a given point (used
   by intake's position check).
 
-No function returns a coordinate derived from the exact ones. `SiteSecret.__repr__` masks
+No function returns a coordinate derived from the exact ones. The public functions of
+`urbanbio.config` are `load`, `repo_root`, `site_offset_m`, and `check`; adding one is a privacy
+decision, and a test holds that list. `SiteSecret.__repr__` masks
 coordinates so a traceback can't print them.
 
 Exact coordinates exist in two kinds of places, both private: the `URBANBIO_SITES` variable
@@ -377,7 +389,8 @@ UrbanbioError
 ```
 
 Every error carries a `reason_code` (a short constant such as `checksum_mismatch`,
-`guano_missing_timestamp`) used in the ledger and run record.
+`guano_missing_timestamp`) used in the ledger and run record. It is a required keyword argument
+with no per-class default, so every flagged unit records a specific reason.
 
 - **Unit-level check failures** (`IntegrityError`, `AdapterError`, `TimeNormalizationError`)
   flag that unit for a human decision, record the reason, and the run continues with other
@@ -392,7 +405,9 @@ Every error carries a `reason_code` (a short constant such as `checksum_mismatch
   `store_unavailable` are also treated as a run-level `StorageError`, so an unreachable store
   stops the run instead of failing every remaining unit.
 - **Store retries** are each backend's own ([store](../store/store-design.md)).
-- A `PrivacyError` is never caught by stage code.
+- A `PrivacyError` is never caught by stage code. A broad handler in stage code (bare `except`,
+  `Exception`, `BaseException`, or `UrbanbioError`) is allowed only after an
+  `except PrivacyError: raise` in the same `try`. A static test enforces this.
 
 ## Logging
 
@@ -406,9 +421,26 @@ Standard library `logging`:
   of a run whose store copy is older than the local file (a crashed run), it uploads that log
   first.
 - Logs contain IDs, offsets, counts, and checksums, never audio samples, exact coordinates,
-  credentials, or the bucket name. A logging filter redacts values of `URBANBIO_BUCKET`,
-  `URBANBIO_SITES`, and `AWS_*` environment variables if they appear in a message. Store
-  locations are logged as store-relative keys.
+  credentials, or the bucket name. A logging filter on every handler redacts, wherever they
+  appear in a formatted message:
+  - the values of `URBANBIO_BUCKET`, `URBANBIO_SITES`, and every non-empty `AWS_*` environment
+    variable (which covers the session token and any other credential boto3 reads);
+  - each exact coordinate in `URBANBIO_SITES`, both as written there and as Python formats the
+    parsed value. The variable's whole value is a multi-line document that a message almost
+    never contains verbatim, so redacting it alone wouldn't catch a coordinate that leaked on
+    its own.
+
+  Redaction is a backstop. Code never puts these values into a message in the first place.
+- Locations are logged relative to a root, never as absolute paths, which would carry the
+  operator's username and directory layout. Store locations are logged as store-relative keys
+  ([store](../store/store-design.md) § Key Layout). A local path is logged as the name of the
+  configured path it lies under and the path relative to it (`quarantine:<relative path>`,
+  `work:…`, `state:…`, `model_cache:…`, `test_audio_cache:…`). A local path under no configured
+  path is logged by its final component only. Code passes local paths to the logger as `Path`
+  arguments, never pre-formatted into the message, and the logging filter rewrites them against
+  the configured paths, which the CLI registers with `urbanbio.logging.set_path_roots()` after
+  loading configuration. Logging doesn't import `urbanbio.config`. This applies to log records, console and file;
+  command output whose purpose is to show a path, such as `config paths`, prints it in full.
 
 ## Dependencies
 
@@ -469,6 +501,7 @@ wheels), pinned in `.python-version`. The uv version is pinned too
 | Bucket name | Environment variable | Private config file | The bucket name isn't committed and arrives the same way as the other private values. |
 | Exact coordinates | TOML in an environment variable, reduced at load time | Private TOML file read by the code; copy in the private store with backup/restore commands | Follows the rule that private values come only from the environment, keeps one code path for every profile, and means the code never reads a private file it might log or copy. Editing is less convenient, but sites change rarely. |
 | Private-value delivery | Environment variables only; delivery is the operator's choice | Read an env file or keyring from the code; AWS shared credential files | One code path for every host. Code that opens a secrets file can log or copy it, and fixing one delivery method excludes operators who use another. |
+| Local paths in logs | Relative to the configured path they lie under (`quarantine:<relative path>`) | Absolute paths; absolute paths with `HOME` or `USER` redacted | Logs carry no username or directory layout, and a relative location stays meaningful on a rebuilt host with other paths. Redacting `HOME` would mangle every path and miss a username that appears elsewhere in one. |
 | CLI framework | Typer | argparse; Click | Type-hinted commands with little code. Click is its dependency anyway. |
 | Real-model tests | Opt-in, public-domain audio downloaded at test time | Commit small public-domain clips; mocks only | Keeps the repository audio-free (CI guard stays absolute) while still exercising real models. |
 | torch build | CPU-only index | Default PyPI wheel | The default Linux wheel pulls CUDA libraries (several GB) that the CPU-only pipeline never uses, onto hosts sized from about 50 GB of disk. |

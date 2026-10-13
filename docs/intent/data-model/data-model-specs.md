@@ -21,8 +21,8 @@ active gap, `[D]` deferred.
 
 ## Site
 
-- [ ] **DATA-SITE-001**: When configuration loads, the system shall build each `Site` with generalized coordinates rounded to the site's `coordinate_precision_deg` when set, otherwise `publish.coordinate_precision_deg`, with `coordinate_uncertainty_m` and `generalization` describing the precision used.
-- [ ] **DATA-SITE-002**: The system shall require each Site's `timezone` to name a zone in the IANA database, checked with `zoneinfo`.
+- [x] **DATA-SITE-001**: When configuration loads, the system shall build each `Site` with generalized coordinates rounded to the nearest multiple of the site's `coordinate_precision_deg` when set, otherwise `publish.coordinate_precision_deg`, stored with no more decimal places than that precision; `coordinate_uncertainty_m` equal to `publish.coordinate_uncertainty_m` times the ratio of the precision used to `publish.coordinate_precision_deg`, rounded to an integer; and `generalization` reading `rounded to <precision>°`.
+- [x] **DATA-SITE-002**: The system shall require each Site's `timezone` to name a zone in the IANA database, checked with `zoneinfo`.
 
 ## Deployment
 

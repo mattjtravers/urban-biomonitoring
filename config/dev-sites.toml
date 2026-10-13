@@ -1,0 +1,9 @@
+# Synthetic sites for the dev profile. Placeholder coordinates; never a real location.
+# Same format as URBANBIO_SITES (config-cli LLD § Private values).
+
+[[site]]
+site_id = "site1"
+latitude_exact = 0.0
+longitude_exact = 0.0
+timezone = "Etc/UTC"
+habitat = "synthetic"

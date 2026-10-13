@@ -79,7 +79,15 @@ Types are Python/Pydantic types. "Null" means the field is `T | None`. Every mod
 A site's precision is `publish.coordinate_precision_deg` unless the site configuration sets a
 coarser `coordinate_precision_deg` for it ([config-cli](../config-cli/config-cli-design.md)
 § Private values); a finer one is a `ConfigError`. `coordinate_uncertainty_m` and
-`generalization` describe the precision actually used.
+`generalization` describe the precision actually used:
+
+- each generalized coordinate is the exact one rounded to the nearest multiple of the precision,
+  and stored with no more decimal places than the precision has (`12.35`, never
+  `12.350000000000001`);
+- `coordinate_uncertainty_m` is `publish.coordinate_uncertainty_m` scaled by the ratio of the
+  site's precision to `publish.coordinate_precision_deg`, rounded to an integer (with the
+  defaults, 0.01° gives 1000 m and 0.05° gives 5000 m);
+- `generalization` reads `rounded to <precision>°`, e.g. `rounded to 0.05°`.
 
 A Site is a fixed location. A recorder moved more than 500 m (the intake position-check
 distance) goes to a new `site_id`, so comparisons between sites never mix two places. Smaller

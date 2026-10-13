@@ -21,7 +21,7 @@ Ingest has two parts, each a child LLD:
   later purges verified originals.
 - **Recorder adapters**, one per device family, behind the interface below. The first is
   **[songmeter-micro2](songmeter-micro2/songmeter-micro2-design.md)** (`INGEST-SM2`).
-  AudioMoth will be a sibling folder.
+  Another device family would be a sibling folder.
 
 Intake calls the adapter. The adapter never touches the store, the ledger, or other files.
 
@@ -90,7 +90,7 @@ maps to Camtrap DP `media` and `observations` through the field alignment in
 |---|---|---|---|
 | Adapter selection | Deployment declares its adapter | Auto-detect from card contents | Explicit is unambiguous. A Song Meter Micro and Micro 2 share firmware and formats, so detection could guess wrong silently. |
 | Time normalization owner | Intake | Each adapter | One implementation of DST, offset, and drift rules for every device. |
-| Sub-HLD split | Intake + one leaf per adapter | One ingest LLD with adapter sections | Adapters are distinct intents that grow independently (AudioMoth next); each owns its own specs and TODO list. |
+| Sub-HLD split | Intake + one leaf per adapter | One ingest LLD with adapter sections | Adapters are distinct intents that grow independently; each owns its own specs and TODO list. |
 
 ## References
 

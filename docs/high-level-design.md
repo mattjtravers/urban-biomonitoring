@@ -98,8 +98,8 @@ Tie-breakers for decisions no requirement covers. When two conflict, the higher 
 - Reads a recorder's media (e.g., an SD card) into the quarantine (§5.1).
 - Computes a SHA-256 for every file before anything else touches it.
 - A **recorder adapter** parses device-specific file naming, header metadata, and device logs
-  into the common metadata contract (§4). Initial adapter: Wildlife Acoustics Song Meter
-  Micro 2. Planned: AudioMoth.
+  into the common metadata contract (§4). The supported recorder is the Wildlife Acoustics
+  Song Meter Micro 2. Other device families plug in as additional adapters.
 - Normalizes all timestamps to UTC, recording the device's configured time zone and any known
   clock offset.
 - Creates a **media retrieval** record within a **deployment**.
@@ -301,8 +301,9 @@ cost are in the archive LLD.
 
 ## 7. Extensibility
 
-- **Recorder adapters:** one adapter per device family behind a common interface (AudioMoth
-  next).
+- **Recorder adapters:** one adapter per device family behind a common interface. Another
+  family (e.g., AudioMoth) is added as a new adapter, with no changes to intake or downstream
+  stages.
 - **Detector interface:** BirdNET first; other acoustic models, or ultrasonic bat classifiers,
   later.
 - **Image branch:** camera traps reuse Site / Deployment / MediaRetrieval / Run, the privacy

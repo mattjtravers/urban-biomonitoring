@@ -109,7 +109,8 @@ lists the files that aren't archived, or why the store doesn't count as a separa
 If the run held files for speech labeling (`--speech-sample`), they aren't archived yet, and
 the card isn't safe to wipe until they are. Label them, run `uv run urbanbio speech label
 --import`, then `uv run urbanbio archive --retrieval <retrieval_id>` to archive and purge them,
-and check the status again. Holds older than 30 days are listed here too.
+and `uv run urbanbio detect --retrieval <retrieval_id>` to analyze them, and check the status
+again; it lists any files archived but not yet detected. Holds older than 30 days are listed here too.
 
 ## 7. The second card
 

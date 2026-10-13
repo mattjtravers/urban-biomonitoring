@@ -143,9 +143,10 @@ AudioFile).
 | `ingest_run_id` | `str` | no | FK → Run |
 
 A retrieval copied and ingested in parts produces one MediaRetrieval row per part. The
-`current_retrievals` view combines them per `retrieval_id`: counts and bytes are recomputed
-from `audio_files`, time spans and battery values take the minimum or maximum across rows, and
-anomalies are concatenated.
+`current_retrievals` view first takes the latest row per (`retrieval_id`, `part`), since a
+part ingested again (for example, after a waiver) writes a new row, then combines the parts per
+`retrieval_id`: counts and bytes are recomputed from `audio_files`, time spans and battery values
+take the minimum or maximum across parts, and anomalies are concatenated.
 
 `Anomaly`: `code: str` (e.g. `gap`, `reboot`, `file_count_mismatch`, `low_battery`,
 `clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `unexpected_audio`,
@@ -191,7 +192,8 @@ the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for e
 A file's processing status is derived from the stage-unit ledger
 ([runs](../runs/runs-design.md)) rather than stored on the record. The `audio_file_status` view
 reports the furthest stage completed: `quarantined` → `screened` → `archived` → `purged`, or
-`held` (screened and held for speech labeling; not archived until its labels are imported), or
+`held` (a succeeded `speech-sample` unit whose `output_refs` include the hold link, with no
+later succeeded `speech-label` unit; not archived until its labels are imported), or
 `flagged` (stopped with a recorded reason; never purged automatically).
 
 ### AudioMaskVersion
@@ -267,6 +269,7 @@ withdrawal gets a new row.
 |---|---|---|---|
 | `detection_id` | `str` | no | FK → Detection; also the clip's key |
 | `audio_file_id` | `str` | no | FK → AudioFile |
+| `site_id` | `str` | no | Denormalized for partitioning |
 | `mask_version` | `int` | no | Mask version the clip was cut from |
 | `start_s` | `float` | no | Clip start in the file, including context |
 | `end_s` | `float` | no | Clip end in the file, including context |
@@ -274,7 +277,7 @@ withdrawal gets a new row.
 | `run_id` | `str` | no | FK → Run that cut it |
 | `created_utc` | `datetime` | no | |
 
-`ClipWithdrawal`: `detection_id`, `clip_sha256` (the withdrawn object), `reason:
+`ClipWithdrawal`: `detection_id`, `site_id`, `clip_sha256` (the withdrawn object), `reason:
 Literal["remask"]`, `mask_version` (the version whose new mask overlaps it), `run_id`,
 `withdrawn_utc`. A clip is live when its latest `clips` row has no withdrawal with the same
 `clip_sha256`. The re-mask flow ([archive](../archive/archive-design.md) § Re-masking) finds
@@ -332,9 +335,18 @@ increment the minor version; any other change is a new major version and a new t
 
 Files are immutable. A stage writes one part file per run × batch × partition, named
 `<run_id>-<batch>.parquet`, before the ledger rows that cite it
-([runs](../runs/runs-design.md) § Write Order). A row counts only when a `succeeded` ledger row
-for its unit cites its run ([runs](../runs/runs-design.md) § Current Rows), so part files left by
-a crashed batch are ignored, and a retry never produces rows that are counted twice.
+([runs](../runs/runs-design.md) § Write Order). `admin` runs, which have one unit and no
+batches, name their files after the unit (`deployments`: `<deployment_id>-<run_id>.parquet`;
+`waivers`: `<run_id>.parquet`), and run-level tables are named `<run_id>.parquet`.
+
+Every table written by units (all except the run-level tables `media_retrievals`,
+`geo_species_lists`, `sites`, and `runs`, and the ledger `stage_units`, whose own `stage` and
+`unit_id` are the units it records) carries two columns beyond its entity's fields:
+`stage` (the stage of the unit that wrote the row) and `unit_id` (that unit's ID, as defined in
+[runs](../runs/runs-design.md) § Units and Idempotency Keys). A row counts only when a
+`succeeded` ledger row with the same `stage`, `unit_id`, and `run_id` exists
+([runs](../runs/runs-design.md) § Current Rows), so part files left by a crashed batch are
+ignored, and a retry never produces rows that are counted twice.
 
 | Table | Key prefix in the store | Partitioning (Hive style) | One file per |
 |---|---|---|---|

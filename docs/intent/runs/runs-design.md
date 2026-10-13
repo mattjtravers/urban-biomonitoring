@@ -33,7 +33,7 @@ A **unit** is the smallest piece of work a stage can skip or redo:
 | purge | one audio file | `audio_file_id` |
 | detect | one archived audio file under one model | `audio_file_id` + `model_id` |
 | rescreen | one archived audio file at its current mask version | `audio_file_id` + `mask_version` (the version re-screened) |
-| admin | one deployment change | `deployment_id` |
+| admin | one deployment change, or one waiver | `deployment_id`, or `<stage>:<unit_id>:<reason_code>` |
 
 The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
 
@@ -116,7 +116,7 @@ If a run crashes:
   `succeeded` and only repeats the cleanup (purge and work-directory sweeps are idempotent).
 
 Purge is the one stage whose output is a local action. It deletes first and then writes its own
-ledger rows in the next batch write; a purge unit whose original is already gone, and whose
+ledger rows in the next batch write, or at run end after the last batch; a purge unit whose original is already gone, and whose
 archive success is in the store, is recorded as `succeeded`, so a crash between the deletion and
 the ledger write repairs itself ([intake](../ingest/intake/intake-design.md) § Purge).
 
@@ -126,7 +126,11 @@ that justify it, and a crash never yields duplicate rows that readers count.
 ## Current Rows
 
 A table row produced by a stage counts only when the ledger records its unit as `succeeded`
-under the same `run_id`. When a unit has succeeded more than once (for example, after a
+under the same `run_id`. Every unit-scoped table carries the `stage` and `unit_id` of the unit
+that wrote each row ([data-model](../data-model/data-model-design.md) § Parquet Tables), and the
+views join rows to the ledger on (`stage`, `unit_id`, `run_id`). Nothing is inferred from a row's
+other columns: a re-mask's `audio_mask_versions` row, for example, has `mask_version` 2 but
+belongs to the `rescreen` unit for mask version 1. When a unit has succeeded more than once (for example, after a
 parameter change), the row set from the latest such run (by `finished_utc`) is the **current**
 one. Every reader (views, curate, validate, publish) reads stage outputs through this rule, which
 `urbanbio.storage.tables` implements as one view per table (e.g. `detections_current`,
@@ -160,8 +164,10 @@ Two lookups read the ledger:
 
 ## Waivers
 
-`urbanbio runs unflag STAGE UNIT --reason CODE --note TEXT` writes a waiver row to the
-`waivers` table: `stage`, `unit_id`, `reason_code`, `note`, `run_id`, `created_utc`. A waiver
+`urbanbio runs unflag STAGE UNIT --reason CODE --note TEXT` is an `admin` run whose single
+unit writes a waiver row to the `waivers` table: `waived_stage`, `waived_unit_id`,
+`reason_code`, `note`, `run_id`, `created_utc` (plus the `stage` and `unit_id` of the `admin`
+unit that wrote it, like every unit-scoped table). A waiver
 covers exactly one reason code for one unit. When a stage re-runs that unit, a check that would
 raise the waived code records it as a warning and continues, and the unit's ledger row carries
 `waived_reason_codes`. Any other failing check still flags the unit. Waivers are keyed by unit
@@ -205,6 +211,12 @@ refusal for one command, and the run still records `git_dirty: true`. Publish re
 outputs from dirty runs in any profile ([publish](../publish/publish-design.md)).
 
 Results from a dirty run must stay replaceable, so in the `processing` profile:
+
+- `--allow-dirty` is accepted only by commands whose results a clean run can replace: `ingest`,
+  `screen`, `speech sample`, `archive`, `detect`, and `process`. `rescreen` (its overwrite
+  removes the previous archived version), `purge` (deletion can't be redone), `deployment
+  create`/`end` and `runs unflag` (`admin`; no clean re-run exists), and `speech label --import`
+  (labels can't be re-derived) refuse it with a `ConfigError`.
 
 - `--allow-dirty` implies `--no-purge` for `archive` and `process`, and purge refuses to delete an
   original whose current archive success came from a dirty run. The originals stay in the
@@ -282,7 +294,7 @@ The software's part is to make every interruption safe:
 | Persist order | Outputs, then ledger, then local cleanup, per batch | Purge each original as soon as its write is confirmed; ledger at end of run | Purging before the ledger is in the store can delete an original whose archival the store can't show, leaving a retrieval that can never be confirmed safe to wipe. |
 | Duplicate rows after a crash | Rows count only when cited by a succeeded ledger row | Deterministic, run-independent file names that a retry overwrites | Run IDs are per execution, so names can't repeat across a retry without overwriting objects; ledger citation needs no overwrite and also covers a crash between output and ledger writes. |
 | Which rows are current | Latest succeeded run per unit | Latest succeeded run per stage or model | Runs cover one retrieval or a pending set, so a per-run choice would select only part of the data; partial runs are normal when any unit is flagged. |
-| Dirty-run results | Re-run by the next clean run; originals kept until then | Put `git_dirty` in the idempotency key; accept dirty results permanently | Keying on dirtiness would also re-run clean results after a dirty run. Without a re-run, outputs from a dirty run could never be published, and once originals were purged they could never be redone. |
+| Dirty-run results | Re-run by the next clean run; originals kept until then; refused where no re-run is possible | Put `git_dirty` in the idempotency key; accept dirty results permanently | Keying on dirtiness would also re-run clean results after a dirty run. Without a re-run, outputs from a dirty run could never be published, and once originals were purged they could never be redone. |
 | Flagged units | Stay skipped until explicitly cleared | Retry automatically on the next run | Tenet 3: a unit that failed verification needs a human decision, not silent retries. |
 | Memory bounding | Configured worker count with a conservative default, one file per worker | Workers equal to the detected CPU count; a memory-aware scheduler | On a small host without swap, one worker per core can exhaust memory and get the run killed. A scheduler is complex for one host. A configured count is predictable and follows Tenet 5. |
 

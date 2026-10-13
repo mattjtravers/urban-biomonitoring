@@ -110,11 +110,20 @@ refused.
    ([runs](../../runs/runs-design.md) § Write Order), and the part's `media_retrievals` row when
    the run ends (a run-level table; [runs](../../runs/runs-design.md) § Current Rows).
 
-**Resuming.** Step 2 moves `PATH`, so re-running the same command after a crash finds no
-`incoming/<label>`. Ingest then looks for a registered part, still in the quarantine, of the same
-deployment whose manifest records that `<label>`. Exactly one match resumes that part: steps 3–6
-run again, the ledger skips completed files, and the `media_retrievals` row is computed over every
-file in the part. No match, or more than one, is a `ConfigError` naming the candidates. The same
+**Resuming.** A crash can leave a part registered in the store either before or after `PATH`
+was moved, and re-running the same command must finish it without registering it twice:
+
+- **`PATH` exists.** After step 1, ingest looks for a registered part of the same deployment
+  whose files haven't been moved (its `card/part<NN>/` directory doesn't exist) and whose
+  manifest equals the one just computed. A match resumes that part at the move in step 2;
+  no match registers a new part.
+- **`PATH` is gone.** Ingest looks for a registered part of the same deployment, moved into the
+  quarantine, whose manifest records that `<label>` and which isn't yet safe to wipe. Matching
+  only unfinished parts lets an operator reuse a label from earlier weeks.
+
+Exactly one match resumes that part: the remaining steps run, the ledger skips completed files,
+and the `media_retrievals` row is computed over every file in the part. No match when `PATH` is
+gone, or more than one match in either case, is a `ConfigError` naming the candidates. The same
 applies to `urbanbio process`, whose later stages resume through their own ledgers.
 
 ## Time Normalization

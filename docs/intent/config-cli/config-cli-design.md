@@ -328,15 +328,17 @@ Typer application `urbanbio`, installed as a console script.
 | `urbanbio detect --retrieval R \| --all-pending` | Run BirdNET on archived audio | `detect` |
 | `urbanbio purge --retrieval R [--discard UNIT\|PATH … --reason TEXT]` | Delete verified (or superseded) originals from the quarantine; discard named flagged audio files (by unit) or `unexpected_audio` device files (by manifest path) without archiving | `purge` |
 | `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect` | one run per stage |
-| `urbanbio retrieval status R` | Per-file status; tells whether the card can be wiped | — |
+| `urbanbio retrieval status R` | Per-file status; tells whether the card can be wiped; lists files archived but not yet detected and work-directory FLACs still on disk | — |
 | `urbanbio speech sample --retrieval R --n N` | Hold a stratified sample in quarantine for speech labeling | `speech-sample` |
 | `urbanbio speech label --import` | Import labels for held samples from `labels.csv` and release the holds; the next `archive --retrieval R` archives the released files | `speech-label` |
 | `urbanbio speech recall` | Report speech recall and masked fraction | — |
 | `urbanbio rescreen --retrieval R` | Re-screen archived audio and re-mask | `rescreen` |
-| `urbanbio runs list [--stage S]` / `runs show RUN` / `runs unflag STAGE UNIT` | Provenance | — |
+| `urbanbio runs list [--stage S]` / `runs show RUN` | Provenance | — |
+| `urbanbio runs unflag STAGE UNIT --reason CODE --note TEXT` | Waive one check for one unit ([runs](../runs/runs-design.md) § Waivers) | `admin` |
 | `urbanbio query` | Open a DuckDB shell with curated views registered | — |
 
-Every command that creates a run accepts `--allow-dirty`
+Every command that creates a run accepts `--allow-dirty` in the `dev` profile; in `processing`,
+only those whose results a clean run can replace accept it
 ([runs](../runs/runs-design.md) § Run Record).
 
 Exit codes: `0` success; `1` run failed; `2` run partial (some units flagged or failed);

@@ -169,9 +169,11 @@ Field-level schemas are defined in the LLD as Pydantic models.
 | Site | Stable location. Exact coordinates are private; generalized coordinates are published. |
 | Deployment | One recorder at one site for a continuous period: device model and serial, firmware, recording configuration, mounting notes. Modeled after Camtrap DP deployments for reuse by the image branch. |
 | MediaRetrieval | One media pull within a deployment: time span, file count, checksums, battery status, anomalies. |
-| AudioFile | One recording: UTC start, duration, sample rate, original and masked checksums, and store-relative location. On the `s3` backend, its current storage tier is derived from file age and the lifecycle rule. |
+| AudioFile | One recording: UTC start, duration, sample rate, original checksums, and store-relative location. On the `s3` backend, its current storage tier is derived from file age and the lifecycle rule. |
+| AudioMaskVersion | One masked version of an AudioFile: checksums and the speech events applied. A re-mask adds a version. |
 | SpeechEvent | One masked segment: file, offsets, detector, score. No audio. |
 | Detection | File, offsets, taxon (scientific + common name), confidence, model and version, run ID. |
+| Clip | A short masked excerpt around a detection, for review or publication; withdrawn when a re-mask covers it. |
 | Label | A reviewer's verdict on a detection. |
 | Calibration | Per taxon × model version: fitted curve, thresholds, label count. |
 | WeatherObs | Hourly observations from the nearest NWS station. |

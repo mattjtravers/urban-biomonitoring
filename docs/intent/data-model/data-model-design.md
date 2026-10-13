@@ -40,6 +40,12 @@ Principles:
 | Calibration | `calibration_id` | `cal-<16 hex>` | SHA-256 of `taxon_key`, `model_id`, `label_set_hash` |
 | Run | `run_id` | `<stage>-<YYYYMMDDTHHMMSSZ>-<4 hex>` | Stage, start time, random suffix |
 
+A hashed ID is its prefix followed by the first 16 hex characters of the SHA-256 of the
+canonical JSON ([runs](../runs/runs-design.md) § Units and Idempotency Keys) of an object
+holding the listed fields under their own names; for example, a `detection_id` hashes
+`{"audio_file_id": …, "label": …, "model_id": …, "start_s": …}`. Datetimes in the object are
+ISO 8601 UTC strings.
+
 A `detection_id` is stable across runs and re-masks: the same model, file, window, and label
 give the same ID, so reviewers' labels, review clips, and published `occurrenceID`s keep pointing
 at the same detection. Two runs of one model with different parameters, or a run on a later mask
@@ -102,7 +108,7 @@ Aligned with the Camtrap DP 1.0.2 `deployments` table so the image branch reuses
 A Deployment's recording configuration is fixed for its lifetime. Changing any of device,
 `sample_rate_hz`, `schedule`, `gain_db`, or mounting ends the deployment and starts a new one,
 matching Camtrap DP's meaning of a deployment. `urbanbio deployment create` refuses to overlap
-an active deployment on the same device.
+an active deployment on the same device, with a `ConfigError`.
 
 `RecordingSchedule`: `duty_on_s: int`, `duty_off_s: int` (0 for continuous),
 `max_file_length_s: int`, `daily_windows: list[tuple[time, time]] | None` (local recorder time;
@@ -185,7 +191,8 @@ One recording. Static facts about the original file. Camtrap DP `media` alignmen
 On the `s3` backend, the HLD's storage tier is derived too: the `audio_file_tier` view reports
 `STANDARD` until `store.glacier_transition_days` ([store](../store/store-design.md)
 § Configuration) after the current mask version's `created_utc`, then
-`GLACIER_IR` (files under 128 KB, such as fully masked minutes, stay `STANDARD`). Lifecycle
+`GLACIER_IR`, except that a file whose current `masked_bytes` is at most 131,072 (the
+lifecycle rule's 128 KB size filter), such as a fully masked minute, stays `STANDARD`. Lifecycle
 transitions run asynchronously in AWS S3, so the view gives the billed class, which starts on
 the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for every file.
 
@@ -209,6 +216,7 @@ archive holds only the latest version (see [archive](../archive/archive-design.m
 | `masked_pcm_sha256` | `str` | no | Decoded masked samples |
 | `speech_event_ids` | `list[str]` | no | Events whose intervals this version zeroes |
 | `masked_seconds` | `float` | no | Total zeroed duration |
+| `masked_bytes` | `int` | no | Size of the archived FLAC |
 | `run_id` | `str` | no | FK → Run |
 | `created_utc` | `datetime` | no | |
 | `storage_class` | `str` | no | Storage class at write time, fixed by the backend: `STANDARD` on `s3`, `FILESYSTEM` on `filesystem` |
@@ -350,7 +358,7 @@ ignored, and a retry never produces rows that are counted twice.
 
 | Table | Key prefix in the store | Partitioning (Hive style) | One file per |
 |---|---|---|---|
-| `sites` | `curated/sites/` | none | run whose site configuration differs from the latest file (`<run_id>.parquet`; generalized values only) |
+| `sites` | `curated/sites/` | none | run, of any stage, whose generalized site configuration differs from the latest current file; written at run end (`<run_id>.parquet`; generalized values only) |
 | `deployments` | `curated/deployments/` | none | deployment change (`<deployment_id>-<run_id>.parquet`) |
 | `media_retrievals` | `curated/media_retrievals/` | `site_id=` | ingest run (one row per part) |
 | `audio_files` | `curated/audio_files/` | `site_id=`, `year_month=` | ingest run × batch |

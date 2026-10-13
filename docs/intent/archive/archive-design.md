@@ -60,7 +60,7 @@ labels are imported, with any `manual` speech events in its first mask.
    object's length and full SHA-256 ([store](../store/store-design.md) § Store Interface), so a
    returned `put` is the proof that the archived bytes are the verified FLAC.
 8. **Record** an AudioMaskVersion row and a `succeeded` ledger unit (unit ID
-   `audio_file_id` + mask version). When the batch is complete, its `audio_mask_versions` part
+   `<audio_file_id>:v<mask_version>`). When the batch is complete, its `audio_mask_versions` part
    file and then its ledger part file are written to the store
    ([runs](../runs/runs-design.md) § Write Order). Only the ledger row in the store allows purge
    ([intake](../ingest/intake/intake-design.md) § Purge).
@@ -132,7 +132,7 @@ mask version:
   ([store](../store/store-design.md) § Store Interface). The sidecar is unchanged, and there's
   no original to purge.
 - The re-mask runs inside a `rescreen` run, so step 8's records belong to the `rescreen` unit
-  (`audio_file_id` + the mask version re-screened; [runs](../runs/runs-design.md) § Units and
+  (`<audio_file_id>:v<mask_version>` of the version re-screened; [runs](../runs/runs-design.md) § Units and
   Idempotency Keys): the new AudioMaskVersion row and the new `speech_events` rows are written
   in that run's batch, and the unit's ledger row cites them in `output_refs`. Archive writes no
   `archive` ledger row for a re-mask. `audio_mask_versions_current` counts rows cited by a

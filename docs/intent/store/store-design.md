@@ -95,14 +95,17 @@ Contract, on every backend:
   - under `runs/`, for rewriting a run record and its log;
   - under `archive/`, when the existing object's `mask-version` metadata is lower than the new
     one's. The backend reads the existing object with `head` and replaces it only if it is
-    unchanged since that read.
+    unchanged since that read; otherwise it raises `StorageError` (`store_object_changed`)
+    without replacing it.
 
   Any other `overwrite=True` raises `StorageError` (`store_overwrite_forbidden`) before
   writing.
-  Metadata keys and values are ASCII, keys lowercase with hyphens, at most 2 KB in total.
+  Metadata keys and values are ASCII, keys lowercase letters, digits, and hyphens, at most
+  2 KB in total; any other metadata raises `ValueError` before writing.
 - **`head`** returns the object's length, SHA-256, and metadata, or `None` when no object
   exists.
-- **`get`** writes the object to `dest` and verifies its SHA-256 against the stored value.
+- **`get`** writes the object to `dest` and verifies its SHA-256 against the stored value; a
+  mismatch raises `IntegrityError` (`store_checksum_mismatch`).
 - **`list`** yields keys under `prefix` in lexicographic order.
 - **`delete`** removes the object at `key`. A key outside `clips/` raises `StorageError`
   (`store_delete_forbidden`) before the backend is called.
@@ -126,7 +129,7 @@ same on every backend: `s3://<bucket>/<key>` on `s3`, `<root>/<key>` on `filesys
 archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.flac
 archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.header.json
 retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/manifest-part<NN>.json
-retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/device/<original filename>
+retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/device/part<NN>/<device path>
 curated/<table>/<partitions>/<file>.parquet
 clips/<detection_id>.flac
 runs/<run_id>.json
@@ -135,8 +138,15 @@ runs/<run_id>.log
 
 `date` is the UTC date of the file start. Filenames are opaque IDs, so recorder names don't
 appear in archive keys. `<NN>` is the two-digit ingest part number
-([intake](../ingest/intake/intake-design.md) § Ingest Flow). A device file's original filename is
-sanitized to the key alphabet; the original name is kept in the part's manifest.
+([intake](../ingest/intake/intake-design.md) § Ingest Flow), so each part's device files have
+their own prefix and a log file present in every part never collides.
+
+`<device path>` is the device file's path relative to the part's card root, sanitized
+segment by segment: each character outside `[A-Za-z0-9._=-]` becomes `_`, and a leading `.`
+becomes `_` (so no device file can be mistaken for a backend's hidden temporary or metadata
+file). When two device paths in one part sanitize to the same key, each of them gets
+`-<8 hex>` inserted before its extension, the first 8 hex characters of the SHA-256 of its
+original path. The part's manifest records each device file's original path with its key.
 
 ## Store Marker
 
@@ -167,8 +177,10 @@ sanitized to the key alphabet; the original name is kept in the part's manifest.
   stop the command before any other store access, and the run fails with exit `3`.
 - **Run records** carry the `store_id`, so every output traces to the store that holds it
   ([runs](../runs/runs-design.md) § Run Record).
-- **`urbanbio config check`** opens the store as above. It is the only store access `config
-  check` makes.
+- **`urbanbio config check`** opens the store as above, and then reads only the
+  `current_deployments` view, to check that every deployment's site is configured
+  ([config-cli](../config-cli/config-cli-design.md) § `urbanbio config check`). It writes
+  nothing.
 
 The marker holds no private value; the `store_id` is random.
 
@@ -181,7 +193,7 @@ credentials or config files (HLD §8). Retries use botocore's `standard` mode wi
 
 | Operation | AWS S3 call |
 |---|---|
-| `put` | `PutObject` with `ChecksumAlgorithm = SHA256`, the precomputed `ChecksumSHA256`, and the metadata; then `HeadObject(ChecksumMode="ENABLED")`, requiring the returned checksum and length to match. With `overwrite=False`, the PUT carries `If-None-Match: *`, so an existing object fails the write (`store_object_exists`). An allowed overwrite carries `If-Match` with the ETag from the preceding `head`, so a change between the check and the write fails it. Every object is a single PUT; objects are well under the 5 GB single-PUT limit. |
+| `put` | `PutObject` with `ChecksumAlgorithm = SHA256`, the precomputed `ChecksumSHA256`, and the metadata; then `HeadObject(ChecksumMode="ENABLED")`, requiring the returned checksum and length to match. With `overwrite=False`, the PUT carries `If-None-Match: *`, so an existing object fails the write (`store_object_exists`). An allowed overwrite carries `If-Match` with the ETag from the preceding `head`, so a change between the check and the write fails it (`store_object_changed`). Every object is a single PUT; objects are well under the 5 GB single-PUT limit. |
 | `head` | `HeadObject(ChecksumMode="ENABLED")`; 404 gives `None` |
 | `get` | `GetObject`, streamed to `dest` with `ChecksumMode="ENABLED"` |
 | `list` | `ListObjectsV2` paginated |
@@ -299,7 +311,7 @@ operator provides.
 
 | Operation | Behavior |
 |---|---|
-| `put` | Create the key's parent directories. Write the source to a temporary file `.<name>.tmp-<random>` in the target directory, hashing while writing; `fsync` it; set its mode. Write the metadata (key, length, SHA-256, metadata map) to a temporary file in `<dir>/.meta/` and `fsync` it. Then `rename` the object to its final name, `rename` the metadata to `.meta/<name>.json`, and `fsync` both directories. Finally re-open the final file, hash it in full, and require the length and SHA-256 to match the metadata. With `overwrite=False`, a committed object at the key raises `store_object_exists` before writing; an uncommitted one (below) is replaced. |
+| `put` | Create the key's parent directories. Write the source to a temporary file `.<name>.tmp-<random>` in the target directory, hashing while writing; `fsync` it; set its mode. Write the metadata (key, length, SHA-256, metadata map) to a temporary file in `<dir>/.meta/` and `fsync` it. Then `rename` the object to its final name, `rename` the metadata to `.meta/<name>.json`, and `fsync` both directories. Finally re-open the final file, hash it in full, and require the length and SHA-256 to match the metadata. With `overwrite=False`, a committed object at the key raises `store_object_exists` before writing; an uncommitted one (below) is replaced. An allowed overwrite repeats the `head` just before renaming the object into place and raises `store_object_changed` when the result differs from the earlier `head`. With one writing host per store (§ Concurrency) and the run lock on that host, nothing else writes the key between that check and the rename. |
 | `head` | Read `.meta/<name>.json`, `stat` the object, and hash it in full. When the object exists and its length and SHA-256 equal the metadata's, return it. When the object is missing, or the metadata is missing or disagrees, the object is **uncommitted** and `head` returns `None`. |
 | `get` | `head`, then copy to `dest`, hashing, and compare with the committed SHA-256. An uncommitted object raises `StorageError` (`store_object_uncommitted`). |
 | `list` | Walk the directory tree under `prefix`, skipping `.meta/` directories and temporary files, and yield keys whose metadata file exists |
@@ -386,6 +398,7 @@ other's work.
 | `filesystem` commit point | Metadata renamed after the object; `head` hashes the object | Metadata first (the object's existence as commit); `head` compares lengths only | With metadata first, a crash during a re-mask leaves new metadata beside the old object, and equal lengths would hide it. Renaming metadata last and hashing in `head` makes every crash state either committed-and-correct or visibly uncommitted, and a re-run repairs it. |
 | Store switch guard | Refuse while retrievals are mid-flight; warn otherwise | Always refuse; never check | A switch with nothing in flight is a legitimate operator choice. A switch mid-retrieval separates a card's files from their ledger, which Tenet 3 says to stop on. |
 | Archive immutability on `filesystem` | Read-only file modes plus interface-level delete restriction | Rely on the interface only | The mode also stops other tools on the host from editing archived audio in place. Full protection would need filesystem-level controls the pipeline can't assume. |
+| Device file keys | Per-part prefix and sanitized relative path, with a path-hash suffix only on collision | Original filename alone; content hash as the name | Parts of one retrieval routinely repeat a log's filename, and card folders can repeat names. Keeping the readable path, with the manifest mapping it back, lets an operator find a log without a lookup. |
 | One backend per store | A store lives on exactly one backend | Tiered mixes (recent on disk, old in AWS S3) | One root, one marker, one ledger. Mixing would make "where is this object" a lookup instead of a key. |
 
 ## Open Questions & Future Decisions

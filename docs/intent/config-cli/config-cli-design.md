@@ -92,7 +92,8 @@ Configuration is read in three layers:
    without editing committed files.
 
 A key in the wrong layer is a `ConfigError`, so a stage parameter can't vary between profiles or
-operators. Every deployment key has a documented default in its profile file, except
+operators. So is a key that no configuration model defines, or a value of the wrong type, so a
+misspelled key can't silently leave a default in force. Every deployment key has a documented default in its profile file, except
 `store.root` in `processing`, which an operator choosing the `filesystem` backend must set.
 
 ### Public: `config/processing.toml` and `config/dev.toml` (committed)
@@ -262,9 +263,12 @@ In every profile, it fails when:
   working tree;
 - a variable required by the profile and backend is missing or empty;
 - the site configuration doesn't parse, names an unknown time zone, or lacks a site that a
-  deployment references;
+  deployment in the store's `current_deployments` view references;
 - a public config value looks like a coordinate pair at a precision finer than
-  `coordinate_precision_deg`;
+  `coordinate_precision_deg`: any table in a configuration layer, or in a file passed with
+  `--settings`, that holds a numeric key whose name contains `lat` and a numeric key whose
+  name contains `lon` (case-insensitive), where either value isn't a multiple of
+  `coordinate_precision_deg` (to within 10⁻⁹);
 - a configured path lies inside the repository working tree;
 - the quarantine, work, or state directory is missing or has a mode other than `0700`;
 - the store can't be opened: the store is unreachable, its marker is missing, or the marker
@@ -320,14 +324,14 @@ Typer application `urbanbio`, installed as a console script.
 | `urbanbio config paths` | Print the configured paths for the current profile, expanded and resolved | — |
 | `urbanbio store init` | Write the store marker for the current profile ([store](../store/store-design.md) § Store Marker) | — |
 | `urbanbio site list` | Show sites with generalized coordinates | — |
-| `urbanbio deployment create --site S --serial N --recorder-name R --start T [--adapter A] [--settings FILE]` | Register a deployment; refuses to overlap an active deployment on the same device. `--settings` names a TOML file with any of `sample_rate_hz`, the `schedule` fields, `gain_db`, `mount_height_m`, `mount_heading_deg`, `tags`, and `comments`; unset recording values come from `[recording]` | `admin` |
+| `urbanbio deployment create --site S --serial N --recorder-name R --start T [--adapter A] [--settings FILE]` | Register a deployment; refuses to overlap an active deployment on the same device. `--settings` names a TOML file with any of `sample_rate_hz`, the `schedule` fields, `gain_db`, `mount_height_m`, `mount_heading_deg`, `tags`, and `comments`; unset recording values come from `[recording]`, and any other key is a `ConfigError` | `admin` |
 | `urbanbio deployment end DEPLOYMENT --end T` | Close a deployment | `admin` |
 | `urbanbio ingest PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R]` | Hash, parse, and register a card copied into the quarantine | `ingest` |
 | `urbanbio screen --retrieval R` | Run both speech detectors; write speech events | `screen` |
 | `urbanbio archive --retrieval R [--no-purge]` | Mask, encode FLAC, write to the store, verify; purge verified originals unless `--no-purge`. Files held for speech labeling are skipped until their labels are imported | `archive` |
 | `urbanbio detect --retrieval R \| --all-pending` | Run BirdNET on archived audio | `detect` |
 | `urbanbio purge --retrieval R [--discard UNIT\|PATH … --reason TEXT]` | Delete verified (or superseded) originals from the quarantine; discard named flagged audio files (by unit) or `unexpected_audio` device files (by manifest path) without archiving | `purge` |
-| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect` | one run per stage |
+| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect`. A stage whose run ends `partial` passes its succeeded files on; a stage whose run ends `failed` stops `process` before the next stage, and `process` exits with that run's code | one run per stage |
 | `urbanbio retrieval status R` | Per-file status; tells whether the card can be wiped; lists files archived but not yet detected and work-directory FLACs still on disk | — |
 | `urbanbio speech sample --retrieval R --n N` | Hold a stratified sample in quarantine for speech labeling | `speech-sample` |
 | `urbanbio speech label --import` | Import labels for held samples from `labels.csv` and release the holds; the next `archive --retrieval R` archives the released files | `speech-label` |

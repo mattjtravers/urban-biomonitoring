@@ -29,11 +29,14 @@ A **unit** is the smallest piece of work a stage can skip or redo:
 | screen | one audio file | `audio_file_id` |
 | speech-sample | one audio file considered for the hold | `audio_file_id` |
 | speech-label | one held audio file | `audio_file_id` |
-| archive | one mask version of an audio file | `audio_file_id` + `mask_version` (1 at first archive) |
+| archive | one mask version of an audio file | `<audio_file_id>:v<mask_version>` (`v1` at first archive) |
 | purge | one audio file | `audio_file_id` |
-| detect | one archived audio file under one model | `audio_file_id` + `model_id` |
-| rescreen | one archived audio file at its current mask version | `audio_file_id` + `mask_version` (the version re-screened) |
+| detect | one archived audio file under one model | `<audio_file_id>:<model_id>` |
+| rescreen | one archived audio file at its current mask version | `<audio_file_id>:v<mask_version>` (the version re-screened) |
 | admin | one deployment change, or one waiver | `deployment_id`, or `<stage>:<unit_id>:<reason_code>` |
+
+A unit ID that combines values joins them with `:`, which no entity ID contains (entity IDs
+match `^[a-z0-9-]+$`), so a unit ID splits back into its parts unambiguously.
 | validate, publish | defined with their specs | Both stages are interfaces only in Phase 1. Their units (for example, the units that cut clips and write the `clips` table) are defined when their specs are written, and must give every row they write a `stage` and `unit_id`. |
 
 The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:

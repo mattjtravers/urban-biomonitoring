@@ -71,7 +71,8 @@ refused.
    part `01`, or, with `--retrieval R`, add the next part number to an existing retrieval (a
    card copied in parts). Allocation reads the retrieval prefixes already in the store. Write
    `manifest-part<NN>.json`, which records the part's `<label>` with the paths, sizes, and
-   checksums (no audio content), to the quarantine and to the store under the retrieval's prefix.
+   checksums (no audio content), and each device file's store key
+   ([store](../../store/store-design.md) § Key Layout), to the quarantine and to the store under the retrieval's prefix.
    Only then move `PATH` to `<retrieval_id>/card/part<NN>/` (a rename on the same filesystem). The
    manifest in the store is the part's registration: a crash after this step loses nothing the
    next run needs. A file whose path and SHA-256 already appear in an earlier part's manifest is

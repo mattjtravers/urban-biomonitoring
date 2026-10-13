@@ -32,8 +32,8 @@ EARS requirements for [detect](detect-design.md). Markers: `[x]` implemented, `[
 - [ ] **DETECT-FLOW-004**: When the detect stage runs a batch, the system shall call the detector with the batch's file paths and `n_workers = resources.workers`.
 - [ ] **DETECT-FLOW-005**: When the detect stage records a detection, the system shall set `overlaps_mask_at_detect` to whether its window intersects a masked interval of the mask version analyzed.
 - [ ] **DETECT-FLOW-006**: When a detect batch finishes, the system shall write its `detections` part files partitioned by `model_id`, `site_id`, and `year_month`, then its ledger part, then delete the batch's work-directory FLACs.
-- [ ] **DETECT-FLOW-007**: If a fetched FLAC's checksum doesn't match `masked_sha256` and the object isn't an interrupted re-mask, then the system shall flag the unit.
-- [ ] **DETECT-FLOW-008**: If a fetched FLAC is an interrupted re-mask (its `mask-version` is one above the recorded version), then the system shall mark the unit `failed` (`remask_in_progress`).
+- [ ] **DETECT-FLOW-007**: If a fetched FLAC's checksum doesn't match `masked_sha256` and the object isn't an interrupted re-mask (ARCH-REMASK-006), then the system shall flag the unit `archive_conflict`.
+- [ ] **DETECT-FLOW-008**: If a fetched FLAC is an interrupted re-mask (ARCH-REMASK-006), then the system shall mark the unit `failed` (`remask_in_progress`).
 - [ ] **DETECT-FLOW-009**: If a file fails to decode or the model raises an error, then the system shall mark the unit `failed`.
 
 ## Re-runs and New Models

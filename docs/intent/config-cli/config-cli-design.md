@@ -58,7 +58,8 @@ config/
 Module boundaries follow the HLD components. `models`, `storage`, `provenance`, and `config`
 are shared. A stage package imports shared packages and never another stage's internals.
 `storage.archive` imports `screen.mask` for the masking primitive, the only sanctioned
-cross-stage import.
+cross-stage import. `cli.py` isn't a stage: it imports each stage's entry point and nothing
+below it.
 
 ## Configuration
 
@@ -171,8 +172,9 @@ refuses production data in three ways:
 - **Its own store.** The store marker must name `dev`
   ([store](../store/store-design.md) § Store Marker). A store initialized for `processing` is
   refused, on any backend.
-- **No real media or archive writes.** The commands that touch real media or write to the
-  archive (`ingest`, `process`, `archive`, `purge`, `rescreen`) exit with a `ConfigError` before
+- **No real media or archive writes.** The commands that read quarantine originals or write to
+  the archive (`ingest`, `process`, `screen`, `speech sample`, `speech label --import`,
+  `archive`, `purge`, `rescreen`) exit with a `ConfigError` before
   doing anything. Tests exercise those stages by calling the stage entry points directly with a
   test store.
 
@@ -235,6 +237,13 @@ store) is the operator's choice, documented in runbooks.
 `URBANBIO_PROFILE` and `URBANBIO_CONFIG` are public. They are environment variables because
 they select configuration, not because they are secret.
 
+A private value is read, and its absence is a `ConfigError`, only when a command needs it:
+site configuration for every command that creates a run (each run may write the `sites`
+table), `site list`, and `config check`; the bucket and AWS keys for every command that opens
+an `s3` store. `config paths` and `--help` read no private value and don't open the store, so
+the installer can create directories before private values exist
+([install](../install/install-design.md)).
+
 `URBANBIO_SITES` holds the exact site coordinates. Its value is a TOML document, in the same
 format as `config/dev-sites.toml`:
 
@@ -246,10 +255,13 @@ longitude_exact = 0.0
 timezone = "Etc/UTC"       # IANA zone of the site
 habitat = "residential garden"
 nws_station_id = "XXXX"
+# coordinate_precision_deg = 0.05   # Optional; only coarser than publish.coordinate_precision_deg
 ```
 
 `timezone` must name a zone in the IANA database (checked with `zoneinfo`). It isn't private:
-it is coarser than the published coordinates.
+it is coarser than the published coordinates. `coordinate_precision_deg`, when set, generalizes
+that site more coarsely than the project default (HLD T4); a value finer than
+`publish.coordinate_precision_deg` is a `ConfigError`.
 
 #### `urbanbio config check`
 
@@ -262,7 +274,8 @@ In every profile, it fails when:
   `URBANBIO_CONFIG` is relative, names a missing file, or names one inside the repository
   working tree;
 - a variable required by the profile and backend is missing or empty;
-- the site configuration doesn't parse, names an unknown time zone, or lacks a site that a
+- the site configuration doesn't parse, names an unknown time zone, sets a
+  `coordinate_precision_deg` finer than `publish.coordinate_precision_deg`, or lacks a site that a
   deployment in the store's `current_deployments` view references;
 - a public config value looks like a coordinate pair at a precision finer than
   `coordinate_precision_deg`: any table in a configuration layer, or in a file passed with
@@ -416,8 +429,11 @@ wheels), pinned in `.python-version`. The uv version is pinned too
 
 ## Testing Strategy
 
-- **No real field audio in the repository, ever.** CI's `repo-hygiene` job rejects audio by
-  extension and content. Test audio is **generated at test time** by fixture helpers in
+- **No real field audio in the repository, ever.** CI's `repo-hygiene` job
+  (`scripts/check-repo-hygiene.sh`, also run locally) fails when a tracked file has an audio
+  extension or audio magic bytes (RIFF/WAVE, FLAC, Ogg, ID3), or lies on a private or
+  local-data path (`config/private/`, root-level `quarantine/`, `data/`, `work/`, `output/`,
+  `outputs/`, `*.local.toml`/`.yaml`/`.yml`, `.env`, `.claude/settings.local.json`). Test audio is **generated at test time** by fixture helpers in
   `tests/fixtures/` (tones, chirps, noise, silence), written to `tmp_path`.
 - **Synthetic Song Meter cards.** A fixture builder writes WAV files with a `guan` chunk, an
   extra vendor chunk, a `Data/` folder, and a `_Summary.txt` in the documented format. It can

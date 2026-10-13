@@ -32,6 +32,7 @@ EARS requirements for [intake](intake-design.md). Markers: `[x]` implemented, `[
 - [ ] **INGEST-INTAKE-FLOW-012**: If an audio file's `start_utc` is earlier than the deployment's `start_utc` minus 10 minutes, or its end is later than the deployment's `end_utc` (when set) or `--retrieved` plus 10 minutes, then the system shall flag the file `outside_deployment`.
 - [ ] **INGEST-INTAKE-FLOW-013**: When ingest parses the device log, the system shall convert each row's device-local time with the UTC offset of the audio files from the same power-on session, falling back to the deployment's `schedule.utc_offset_minutes`.
 - [ ] **INGEST-INTAKE-FLOW-014**: When ingest finishes a batch of files, the system shall write the batch's `audio_files` rows and ingest ledger rows (RUN-ORDER-002), and when the run ends it shall write the part's `media_retrievals` row computed over every file in the part.
+- [ ] **INGEST-INTAKE-FLOW-015**: When an ingest run ends, the system shall write one new `deployments` row when the deployment's `firmware_version` is null and a file of the part reports one (taking the first such file by `start_utc`), or when the retrieval's `clock_drift` anomaly sets `timestamp_issues`, combining both changes in that row.
 
 ## Resuming
 
@@ -46,7 +47,7 @@ EARS requirements for [intake](intake-design.md). Markers: `[x]` implemented, `[
 - [ ] **INGEST-INTAKE-TIME-003**: The system shall never apply a named time zone's daylight-saving rules to device time.
 - [ ] **INGEST-INTAKE-TIME-004**: When audio files in one retrieval report different UTC offsets, the system shall normalize each with its own offset and record an `offset_change` anomaly where the offset changes.
 - [ ] **INGEST-INTAKE-TIME-005**: Where `--clock-offset-s X` is given and `|X| ≥ 0.5`, the system shall set each file's `clock_correction_s` to `-X × (t − t0) / (t1 − t0)`, with `t0` the previous retrieval's `retrieved_utc` or the deployment start, `t1` this retrieval's `retrieved_utc`, and `t` the file's start, and record `X` as the retrieval's `clock_offset_s`.
-- [ ] **INGEST-INTAKE-TIME-006**: Where `--clock-offset-s X` is given and `|X| > 60`, the system shall record a `clock_drift` anomaly and write a new deployment row with `timestamp_issues` set.
+- [ ] **INGEST-INTAKE-TIME-006**: Where `--clock-offset-s X` is given and `|X| > 60`, the system shall record a `clock_drift` anomaly and set the deployment's `timestamp_issues` through INGEST-INTAKE-FLOW-015.
 - [ ] **INGEST-INTAKE-TIME-007**: Where `--clock-offset-s` is not given, the system shall apply no clock correction and leave `clock_offset_s` null.
 
 ## Same-Name Conflicts
@@ -75,7 +76,7 @@ EARS requirements for [intake](intake-design.md). Markers: `[x]` implemented, `[
 
 ## Purge
 
-- [ ] **INGEST-INTAKE-PURGE-001**: The system shall delete a quarantine original only when the archive ledger in the store shows its `<audio_file_id>:v1` unit `succeeded`, the file isn't held for speech labeling, it isn't flagged at any stage, and none of its current `ingest`, `screen`, or `archive` successes came from a run with `git_dirty: true`.
+- [ ] **INGEST-INTAKE-PURGE-001**: Except as INGEST-INTAKE-PURGE-004 and INGEST-INTAKE-PURGE-005 allow, the system shall delete a quarantine original only when the archive ledger in the store shows its `<audio_file_id>:v1` unit `succeeded`, the file isn't held for speech labeling, no stage's latest ledger row for the file is `flagged`, and none of its current `ingest`, `screen`, or `archive` successes came from a run with `git_dirty: true`.
 - [ ] **INGEST-INTAKE-PURGE-002**: When the archive stage has written a batch's ledger part, the system shall purge that batch's eligible originals, deleting each before writing its `purge` ledger row.
 - [ ] **INGEST-INTAKE-PURGE-003**: When a purge unit's original is already gone and its archive success is in the store, the system shall record the unit `succeeded`.
 - [ ] **INGEST-INTAKE-PURGE-004**: When `urbanbio purge --retrieval R` runs, the system shall delete every eligible original of the retrieval, every original flagged `superseded` whose superseding file is archived, and every device log, diagnostics file, and unknown file already in the store.

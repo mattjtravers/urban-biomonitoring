@@ -21,12 +21,12 @@ active gap, `[D]` deferred.
 
 ## Site
 
-- [ ] **DATA-SITE-001**: When configuration loads, the system shall build each `Site` with generalized coordinates rounded to `publish.coordinate_precision_deg`, `coordinate_uncertainty_m` from `publish.coordinate_uncertainty_m`, and a `generalization` text stating the rule.
+- [ ] **DATA-SITE-001**: When configuration loads, the system shall build each `Site` with generalized coordinates rounded to the site's `coordinate_precision_deg` when set, otherwise `publish.coordinate_precision_deg`, with `coordinate_uncertainty_m` and `generalization` describing the precision used.
 - [ ] **DATA-SITE-002**: The system shall require each Site's `timezone` to name a zone in the IANA database, checked with `zoneinfo`.
 
 ## Deployment
 
-- [ ] **DATA-DEP-001**: The system shall store `Deployment` rows as append-only versions, writing a new row whenever `firmware_version` is filled, `timestamp_issues` is set, or `end_utc` is set, and the `current_deployments` view shall take the latest row per `deployment_id`.
+- [ ] **DATA-DEP-001**: The system shall store `Deployment` rows as append-only versions, writing a new row whenever `firmware_version` is filled, `timestamp_issues` is set, or `end_utc` is set, and the `current_deployments` view shall take the latest counted row per `deployment_id`, counting `admin`-written rows under RUN-CURRENT-001 and `ingest`-written rows (`stage` `ingest`, null `unit_id`) under RUN-CURRENT-004.
 - [ ] **DATA-DEP-002**: If `urbanbio deployment create` would create a deployment whose interval overlaps an active deployment on the same `device_serial`, then the system shall refuse with a `ConfigError`.
 - [ ] **DATA-DEP-003**: The system shall define `RecordingSchedule` with `duty_on_s`, `duty_off_s` (0 for continuous), `max_file_length_s`, `daily_windows` (local recorder time; null for around the clock), and `utc_offset_minutes`.
 - [ ] **DATA-DEP-004**: When a deployment is exported in Camtrap DP form, the system shall map its fields to the Camtrap DP 1.0.2 `deployments` fields listed in data-model § Deployment, take `latitude` and `longitude` from the Site's generalized coordinates, and leave `setupBy` empty.
@@ -34,8 +34,9 @@ active gap, `[D]` deferred.
 ## MediaRetrieval
 
 - [ ] **DATA-RET-001**: The system shall write one `MediaRetrieval` row per ingest part, with `part` numbered 1, 2, … within the retrieval and `manifest_sha256` the SHA-256 of that part's manifest.
-- [ ] **DATA-RET-002**: The `current_retrievals` view shall take the latest row per (`retrieval_id`, `part`), then combine parts per `retrieval_id`: recomputing `file_count` and `total_bytes` from current `audio_files` rows, taking the minimum or maximum across parts for time spans and battery values, and concatenating anomalies.
+- [ ] **DATA-RET-002**: The `current_retrievals` view shall take the latest row per (`retrieval_id`, `part`), then combine parts per `retrieval_id`: recomputing `file_count` and `total_bytes` from current `audio_files` rows, taking the minimum or maximum across parts for time spans and battery values, and concatenating the parts' anomalies with the retrieval's counted `retrieval_anomalies` rows.
 - [ ] **DATA-RET-003**: The system shall restrict each `Anomaly` to a `code`, optional `start_utc` and `end_utc`, and a `detail`, with `code` one of `gap`, `reboot`, `file_count_mismatch`, `low_battery`, `clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `unexpected_audio`, `summary_unparseable`, or `high_masked_fraction`.
+- [ ] **DATA-RET-004**: The system shall record anomalies found after ingest (`high_masked_fraction` by the speech screen, `unexpected_audio` by the archive) as `retrieval_anomalies` rows with `retrieval_id`, `part` (null for the whole retrieval), the `Anomaly` fields, and `run_id`, never by rewriting a `media_retrievals` row.
 
 ## AudioFile
 
@@ -72,8 +73,8 @@ active gap, `[D]` deferred.
 - [ ] **DATA-PQ-002**: The system shall write `urbanbio.schema_version` into each Parquet file's key-value metadata, incrementing the minor version for an added nullable column and writing any other change as a new major version under a new table path.
 - [ ] **DATA-PQ-003**: The system shall never modify or overwrite a Parquet file once written.
 - [ ] **DATA-PQ-004**: The system shall write each table under the key prefix and Hive partitioning listed in data-model § Parquet Tables, with `year_month` the UTC `YYYY-MM` of the file start.
-- [ ] **DATA-PQ-005**: The system shall name stage-written part files `<run_id>-<batch>.parquet`, `deployments` files `<deployment_id>-<run_id>.parquet`, `waivers` files `<run_id>.parquet`, and run-level table files (`media_retrievals`, `geo_species_lists`, `sites`, `runs`) `<run_id>.parquet`.
-- [ ] **DATA-PQ-006**: The system shall add `stage` and `unit_id` columns, naming the unit that wrote each row, to every table except the run-level tables and `stage_units`.
+- [ ] **DATA-PQ-005**: The system shall name stage-written part files `<run_id>-<batch>.parquet`, `deployments` files `<deployment_id>-<run_id>.parquet` whichever run writes them, `waivers` files `<run_id>.parquet`, and other run-level table files (`media_retrievals`, `retrieval_anomalies`, `geo_species_lists`, `sites`, `runs`) `<run_id>.parquet`.
+- [ ] **DATA-PQ-006**: The system shall add `stage` and `unit_id` columns, naming the unit that wrote each row, to every table except the run-level tables and `stage_units`; `deployments` rows written by an `ingest` run carry `stage` `ingest` and a null `unit_id`.
 - [ ] **DATA-PQ-007**: When a run of any stage ends and its generalized site configuration differs from the latest current `sites` file, the system shall write a new `sites` file holding generalized values only.
 
 ## Views and Querying

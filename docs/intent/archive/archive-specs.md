@@ -5,7 +5,7 @@ gap, `[D]` deferred.
 
 ## Archive Flow
 
-- [ ] **ARCH-FLOW-001**: When `urbanbio archive --retrieval R` runs, the system shall process each screened audio file of the retrieval that isn't held for speech labeling, and shall write no ledger row for a held file.
+- [ ] **ARCH-FLOW-001**: When `urbanbio archive --retrieval R` runs, the system shall process each screened audio file of the retrieval that no stage's latest ledger row flags and that isn't held for speech labeling, and shall write no ledger row for a held file.
 - [ ] **ARCH-FLOW-002**: When the archive stage processes a file, the system shall first confirm that the quarantine original's SHA-256 still equals `original_sha256`.
 - [ ] **ARCH-FLOW-003**: When the archive stage processes a file for its first archive, the system shall build its `MaskedAudio` with `apply_mask` from the file's current speech events, including `manual` events, as mask version 1.
 - [ ] **ARCH-FLOW-004**: When the archive stage encodes a `MaskedAudio`, the system shall write it to the work directory with `soundfile.write(..., format="FLAC", subtype="PCM_16", compression_level=archive.flac_compression_level)` and no descriptive tags.
@@ -23,7 +23,8 @@ gap, `[D]` deferred.
 ## Device Files
 
 - [ ] **ARCH-DEV-001**: When the archive stage runs for a retrieval, the system shall write each device log, diagnostics file, and unknown file in the part manifests verbatim to its device-file key (STORE-KEY-004).
-- [ ] **ARCH-DEV-002**: If a device file's header identifies it as audio (RIFF/WAVE, FLAC, Ogg, or MP3), then the system shall not write it to the store and shall record an `unexpected_audio` retrieval anomaly naming its manifest path.
+- [ ] **ARCH-DEV-002**: If a device file's header identifies it as audio (RIFF/WAVE, FLAC, Ogg, or MP3), then the system shall not write it to the store and shall record an `unexpected_audio` row in `retrieval_anomalies` (DATA-RET-004) naming its manifest path.
+- [ ] **ARCH-DEV-003**: Before writing a device file, the system shall `head` its key, skipping the write when an object with the same SHA-256 exists, and recording `IntegrityError` (`archive_conflict`) in the run's errors and leaving the file in the quarantine when the existing object's SHA-256 differs.
 
 ## Header Sidecar
 
@@ -38,7 +39,7 @@ gap, `[D]` deferred.
 - [ ] **ARCH-REMASK-003**: When a re-mask adds masked intervals, the system shall delete from `clips/` every clip of the file whose window, including context, overlaps an added interval and that isn't already withdrawn, and write a `clip_withdrawals` row for each, before the unit's ledger row.
 - [ ] **ARCH-REMASK-004**: When re-mask clip withdrawal finds a clip object already gone, the system shall still write its `clip_withdrawals` row.
 - [ ] **ARCH-REMASK-005**: When a resuming `rescreen` adopts an interrupted re-mask, the system shall copy the crashed run's uncited rows with the same `stage` and `unit_id` (AudioMaskVersion, `speech_events`, `clip_withdrawals`) into its own batch under its own `run_id` with their content IDs unchanged, finish pending clip withdrawals, and write the ledger row.
-- [ ] **ARCH-REMASK-006**: When a reader fetches an archive object whose `mask-version` is one above the recorded version and whose `run-id` names a crashed `rescreen` run, the system shall treat that reader's unit as `failed` (`remask_in_progress`).
+- [ ] **ARCH-REMASK-006**: When a reader fetches an archive object that doesn't match the current `masked_sha256`, whose `mask-version` metadata is one above the recorded version and whose `run-id` names an earlier `rescreen` run (an interrupted re-mask), the system shall treat that reader's unit as `failed` (`remask_in_progress`), except that `rescreen` itself adopts the re-mask (SCREEN-RESCREEN-002).
 - [ ] **ARCH-REMASK-007**: If an archive object disagrees with its records in any way other than an interrupted re-mask, then the system shall flag the reading unit `archive_conflict`.
 - [ ] **ARCH-REMASK-008**: The `audio_mask_versions_current` view shall count rows cited by a `succeeded` `archive` unit (first versions) or `rescreen` unit (later versions).
 

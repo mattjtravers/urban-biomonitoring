@@ -129,8 +129,8 @@ restart, a momentary battery failure, or a reboot). Documented columns:
 |---|---|---|
 | `DATE` | Date the line was written | part of `time_local` |
 | `TIME` | Time of day the line was written | part of `time_local` |
-| `LAT`, `NS` | Latitude value and hemisphere | exact position; position check only |
-| `LON`, `EW` | Longitude value and hemisphere | exact position; position check only |
+| `LAT`, `NS` | Latitude value and hemisphere | dropped (exact position) |
+| `LON`, `EW` | Longitude value and hemisphere | dropped (exact position) |
 | `POWER(V)` | Battery voltage, volts | `battery_v` |
 | `#FILES` | Full-spectrum `.wav` files that finished during the preceding minute | `files_completed` |
 
@@ -138,7 +138,10 @@ Parsing rules:
 
 - Split the file into sessions at each header row. Each session after the first counts as a
   reboot.
-- Map columns by header name, not position. Unknown columns go to `extra` verbatim.
+- Map columns by header name, not position. Unknown columns go to `extra` verbatim. `LAT`,
+  `NS`, `LON`, and `EW` are dropped, never returned in any field: the position check uses the
+  GUANO `Loc Position` of each audio file, so the log's copy of the exact position stays only
+  in the archived file.
 - `DATE` and `TIME` are device-local with no offset in the file. The adapter returns them as
   naive local times, and intake converts them using the offset of the audio files from the same
   power-on session ([intake](../intake/intake-design.md) § Ingest Flow, step 5).
@@ -152,7 +155,8 @@ Parsing rules:
   with alkaline cells [UG p.112], and lithium cells may fail at higher voltages.
 
 The summary file includes the deployment's exact coordinates, so it's archived only to the
-private store and never parsed into a persisted table beyond battery and file counts.
+private store and its coordinates are never parsed; only battery and file counts reach a
+persisted table.
 
 ## Diagnostics Files [UG p.93]
 

@@ -25,7 +25,7 @@ implemented, `[ ]` active gap, `[D]` deferred.
 ## Summary File
 
 - [ ] **INGEST-SM2-LOG-001**: When the `songmeter-micro2` adapter parses a `_Summary.txt` file, the system shall start a new session at each header row and map columns by header name, putting unknown columns in `extra` verbatim.
-- [ ] **INGEST-SM2-LOG-002**: When the `songmeter-micro2` adapter parses a summary row, the system shall return `DATE` and `TIME` as a naive local `time_local`, `POWER(V)` as `battery_v`, and `#FILES` as `files_completed`, and shall not return `LAT`, `NS`, `LON`, or `EW` values in any field other than `extra`.
+- [ ] **INGEST-SM2-LOG-002**: When the `songmeter-micro2` adapter parses a summary row, the system shall return `DATE` and `TIME` as a naive local `time_local`, `POWER(V)` as `battery_v`, and `#FILES` as `files_completed`, and shall drop the `LAT`, `NS`, `LON`, and `EW` columns, returning them in no field, `extra` included.
 - [ ] **INGEST-SM2-LOG-003**: If a summary row doesn't parse, then the `songmeter-micro2` adapter shall skip the row and return its line number in `DeviceLog.unparsed_rows`.
 - [ ] **INGEST-SM2-LOG-004**: The `songmeter-micro2` adapter shall return `low_battery_v` from its `[ingest.songmeter_micro2]` table as `DeviceLog.low_battery_v`.
 

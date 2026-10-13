@@ -20,7 +20,13 @@ Package: `urbanbio.screen`.
 
 ## Detectors
 
-Both detectors run on every audio file. A segment is flagged if **either** fires (HLD §3.2).
+`urbanbio screen --retrieval R` screens each audio file of the retrieval whose current
+`ingest` unit succeeded and that isn't yet archived. A file flagged at ingest (for example
+`outside_deployment`) isn't screened, so it can't be archived until the operator waives the
+flag or discards it. An archived file is screened again only through `rescreen`, so the
+archived mask and the current speech events never diverge.
+
+Both detectors run on every screened file. A segment is flagged if **either** fires (HLD §3.2).
 
 Both detectors must complete on a file for it to count as screened. If either raises an error
 or returns no result for a file, the unit ends with status `failed` (reason
@@ -118,7 +124,8 @@ totals: events per detector, files with any event, masked seconds, and masked fr
 recorded time. That's the cost side of HLD §5.2's accepted trade-off.
 
 When more than `screen.max_masked_fraction` (default 0.20) of a retrieval's recorded time is
-masked, the retrieval gets a `high_masked_fraction` anomaly. A rate that high more likely means
+masked, the run records a `high_masked_fraction` row in `retrieval_anomalies`
+([data-model](../data-model/data-model-design.md) § MediaRetrieval). A rate that high more likely means
 a detector is firing on non-speech sound (wind, rain, insects) than that the site is full of
 conversation, and it calls for a look at the thresholds. Masking still proceeds (Tenet 1).
 
@@ -129,7 +136,7 @@ HLD §6.1 requires recall measured against a hand-labeled sample.
 **Sampling.** `urbanbio speech sample --retrieval R --n N` (or `urbanbio process
 --speech-sample N`) runs after screening and before archive, because archive purges originals
 once their archival is recorded in the store. It chooses files and holds them in `quarantine/speech-labeling/` ([intake](../ingest/intake/intake-design.md)
-§ Speech-Labeling Hold). Strata, equal thirds by default:
+§ Speech-Labeling Hold). It chooses from files whose current `ingest` unit succeeded. Strata, in equal thirds:
 
 1. Files where at least one detector fired.
 2. Near misses: no event, but `birdnet_max_score` ≥ 0.02 or `silero_max_prob` ≥ 0.15 in

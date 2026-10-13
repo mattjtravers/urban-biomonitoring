@@ -363,8 +363,11 @@ Each host records the `store_id` it last opened in `<paths.state>/store-id`. Whe
 finds a different `store_id` (the operator changed `[store]` or `URBANBIO_BUCKET`, or the
 store was replaced):
 
-- if the quarantine holds any retrieval that isn't yet safe to wipe, the command exits with a
-  `ConfigError` (`store_changed`). Those retrievals' ledger rows are in the previous store, so
+- if the quarantine holds any `<retrieval_id>/` directory, the command exits with a
+  `ConfigError` (`store_changed`). Purge deletes a retrieval's directory once its files are all
+  archived and purged ([intake](../ingest/intake/intake-design.md) § Purge), so a directory that
+  remains marks a retrieval in flight; the check reads only the quarantine, because the ledger
+  that could say more is in the previous store. Those retrievals' ledger rows are in the previous store, so
   continuing against the new one would re-ingest them without their history. The message names
   both `store_id` values and the retrievals;
 - otherwise it logs a warning naming both `store_id` values, updates `store-id`, and continues.

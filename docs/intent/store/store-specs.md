@@ -83,8 +83,8 @@ EARS requirements for [store](store-design.md). Markers: `[x]` implemented, `[ ]
 ## Changing Stores
 
 - [ ] **STORE-SWITCH-001**: When `open_store` reads the store marker, the system shall compare its `store_id` with `<paths.state>/store-id`, and shall write the `store_id` there when the file is absent.
-- [ ] **STORE-SWITCH-002**: If `open_store` finds a `store_id` different from `<paths.state>/store-id` while the quarantine holds a retrieval that isn't safe to wipe, then the system shall raise `ConfigError` (`store_changed`) naming both `store_id` values and those retrievals.
-- [ ] **STORE-SWITCH-003**: When `open_store` finds a `store_id` different from `<paths.state>/store-id` and the quarantine holds no retrieval that isn't safe to wipe, the system shall log a warning naming both `store_id` values, update `<paths.state>/store-id`, and continue.
+- [ ] **STORE-SWITCH-002**: If `open_store` finds a `store_id` different from `<paths.state>/store-id` while the quarantine holds any `<retrieval_id>/` directory, then the system shall raise `ConfigError` (`store_changed`) naming both `store_id` values and those retrievals, deciding from the quarantine alone.
+- [ ] **STORE-SWITCH-003**: When `open_store` finds a `store_id` different from `<paths.state>/store-id` and the quarantine holds no `<retrieval_id>/` directory, the system shall log a warning naming both `store_id` values, update `<paths.state>/store-id`, and continue.
 
 ## Deferred
 

@@ -28,7 +28,8 @@ writes only through the store interface and builds keys only with `urbanbio.stor
 
 ## Archive Flow (per audio file)
 
-`urbanbio archive --retrieval R` processes each screened file that isn't held for speech
+`urbanbio archive --retrieval R` processes each screened file that isn't flagged at any stage
+(its latest ledger row in no stage is `flagged`) and isn't held for speech
 labeling ([intake](../ingest/intake/intake-design.md) § Speech-Labeling Hold). A held file's unit
 isn't attempted, so it gets no ledger row; it is archived by the first `archive` run after its
 labels are imported, with any `manual` speech events in its first mask.
@@ -87,9 +88,15 @@ needn't download it. Detect then deletes it.
 verbatim to the store under the retrieval prefix ([store](../store/store-design.md) § Key
 Layout), after a content check: any file whose header
 identifies it as audio (RIFF/WAVE, FLAC, Ogg, MP3) and wasn't processed as an audio file is
-**not written to the store**. Device files aren't ledger units, so it is recorded as a retrieval
-`unexpected_audio` anomaly naming its manifest path, and the card isn't safe to wipe until the
+**not written to the store**. Device files aren't ledger units, so it is recorded as an
+`unexpected_audio` row in `retrieval_anomalies` ([data-model](../data-model/data-model-design.md)
+§ MediaRetrieval) naming its manifest path, and the card isn't safe to wipe until the
 operator discards it ([intake](../ingest/intake/intake-design.md) § Purge).
+
+Before writing a device file, the archive `head`s its key. An object with the same SHA-256 means
+an earlier run already wrote it, and the write is skipped, so a resumed run doesn't fail on
+files it uploaded before the crash. An object with a different SHA-256 raises `IntegrityError`
+(`archive_conflict`), recorded in the run's errors, and the file stays in the quarantine.
 
 ## Header Sidecar
 

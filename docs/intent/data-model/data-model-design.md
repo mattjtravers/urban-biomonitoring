@@ -68,13 +68,18 @@ Types are Python/Pydantic types. "Null" means the field is `T | None`. Every mod
 | Field | Type | Null | Unit / notes |
 |---|---|---|---|
 | `site_id` | `str` | no | Opaque ID |
-| `latitude_generalized_deg` | `float` | no | WGS84, rounded to the published precision |
-| `longitude_generalized_deg` | `float` | no | WGS84, rounded to the published precision |
+| `latitude_generalized_deg` | `float` | no | WGS84, rounded to the site's precision (below) |
+| `longitude_generalized_deg` | `float` | no | WGS84, rounded to the site's precision (below) |
 | `coordinate_uncertainty_m` | `int` | no | Declared uncertainty after generalization (DwC `coordinateUncertaintyInMeters`) |
 | `generalization` | `str` | no | Human-readable rule, e.g. "rounded to 0.01°" (DwC `dataGeneralizations`) |
 | `habitat` | `str` | yes | Free text, no location names |
 | `timezone` | `str` | no | IANA time zone of the site (e.g. `Etc/UTC`), for local dates in curate |
 | `nws_station_id` | `str` | yes | Nearest NWS observation station, for the curate stage |
+
+A site's precision is `publish.coordinate_precision_deg` unless the site configuration sets a
+coarser `coordinate_precision_deg` for it ([config-cli](../config-cli/config-cli-design.md)
+§ Private values); a finer one is a `ConfigError`. `coordinate_uncertainty_m` and
+`generalization` describe the precision actually used.
 
 A Site is a fixed location. A recorder moved more than 500 m (the intake position-check
 distance) goes to a new `site_id`, so comparisons between sites never mix two places. Smaller
@@ -117,7 +122,12 @@ device).
 
 Deployment rows are append-only versions. Filling in `firmware_version`, setting
 `timestamp_issues`, or setting `end_utc` writes a new row, and the `current_deployments` view
-takes the latest row per `deployment_id`.
+takes the latest counted row per `deployment_id`. `deployment create` and `deployment end`
+write their rows as `admin` units. An `ingest` run writes the rows that fill in
+`firmware_version` (from the first file of the deployment that reports one) or set
+`timestamp_issues` (a `clock_drift` anomaly) once, at run end; those rows carry `stage`
+`ingest` and a null `unit_id`, and count under the run-level rule
+([runs](../runs/runs-design.md) § Current Rows).
 
 Camtrap DP `setupBy` has no counterpart because it holds people's names. Camtrap DP
 `latitude`/`longitude` come from the Site's generalized coordinates when exported.
@@ -152,12 +162,19 @@ A retrieval copied and ingested in parts produces one MediaRetrieval row per par
 `current_retrievals` view first takes the latest row per (`retrieval_id`, `part`), since a
 part ingested again (for example, after a waiver) writes a new row, then combines the parts per
 `retrieval_id`: counts and bytes are recomputed from `audio_files`, time spans and battery values
-take the minimum or maximum across parts, and anomalies are concatenated.
+take the minimum or maximum across parts, and anomalies are concatenated, together with the
+retrieval's `retrieval_anomalies` rows (below).
 
 `Anomaly`: `code: str` (e.g. `gap`, `reboot`, `file_count_mismatch`, `low_battery`,
 `clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `unexpected_audio`,
 `summary_unparseable`, `high_masked_fraction`), `start_utc: datetime | None`, `end_utc: datetime | None`,
 `detail: str`.
+
+Ingest records its anomalies in the part's `anomalies`. Later stages record theirs as
+**RetrievalAnomaly** rows in the `retrieval_anomalies` table, since rewriting a part's
+MediaRetrieval row would replace ingest's: `retrieval_id`, `part: int | None` (null for an
+anomaly about the whole retrieval), the `Anomaly` fields, and `run_id`. The speech screen
+records `high_masked_fraction` there, and the archive `unexpected_audio`.
 
 ### AudioFile
 
@@ -322,6 +339,7 @@ erDiagram
   Site ||--o{ Deployment : hosts
   Deployment ||--o{ MediaRetrieval : "has"
   MediaRetrieval ||--o{ AudioFile : contains
+  MediaRetrieval ||--o{ RetrievalAnomaly : "noted by later stages"
   AudioFile ||--o{ AudioMaskVersion : "versions"
   AudioFile ||--o{ SpeechEvent : "screened by"
   AudioFile ||--o{ Detection : "analyzed into"
@@ -345,10 +363,12 @@ Files are immutable. A stage writes one part file per run × batch × partition,
 `<run_id>-<batch>.parquet`, before the ledger rows that cite it
 ([runs](../runs/runs-design.md) § Write Order). `admin` runs, which have one unit and no
 batches, name their files after the unit (`deployments`: `<deployment_id>-<run_id>.parquet`;
-`waivers`: `<run_id>.parquet`), and run-level tables are named `<run_id>.parquet`.
+`waivers`: `<run_id>.parquet`), and run-level tables are named `<run_id>.parquet`, except
+`deployments` rows, which keep `<deployment_id>-<run_id>.parquet` whichever run writes them.
 
 Every table written by units (all except the run-level tables `media_retrievals`,
-`geo_species_lists`, `sites`, and `runs`, and the ledger `stage_units`, whose own `stage` and
+`retrieval_anomalies`, `geo_species_lists`, `sites`, and `runs`, the `deployments` rows an
+`ingest` run writes, and the ledger `stage_units`, whose own `stage` and
 `unit_id` are the units it records) carries two columns beyond its entity's fields:
 `stage` (the stage of the unit that wrote the row) and `unit_id` (that unit's ID, as defined in
 [runs](../runs/runs-design.md) § Units and Idempotency Keys). A row counts only when a
@@ -359,11 +379,12 @@ ignored, and a retry never produces rows that are counted twice.
 | Table | Key prefix in the store | Partitioning (Hive style) | One file per |
 |---|---|---|---|
 | `sites` | `curated/sites/` | none | run, of any stage, whose generalized site configuration differs from the latest current file; written at run end (`<run_id>.parquet`; generalized values only) |
-| `deployments` | `curated/deployments/` | none | deployment change (`<deployment_id>-<run_id>.parquet`) |
+| `deployments` | `curated/deployments/` | none | deployment change: an `admin` unit, or an `ingest` run's updates at run end (`<deployment_id>-<run_id>.parquet`) |
 | `media_retrievals` | `curated/media_retrievals/` | `site_id=` | ingest run (one row per part) |
+| `retrieval_anomalies` | `curated/retrieval_anomalies/` | `site_id=` | screen, archive, or rescreen run that records an anomaly (`<run_id>.parquet`) |
 | `audio_files` | `curated/audio_files/` | `site_id=`, `year_month=` | ingest run × batch |
 | `audio_mask_versions` | `curated/audio_mask_versions/` | `site_id=`, `year_month=` | archive or rescreen run × batch |
-| `speech_events` | `curated/speech_events/` | `site_id=`, `year_month=` | screen or rescreen run × batch |
+| `speech_events` | `curated/speech_events/` | `site_id=`, `year_month=` | screen, rescreen, or speech-label run × batch (`manual` events come from label import) |
 | `screen_file_stats` | `curated/screen_file_stats/` | `site_id=`, `year_month=` | screen run × batch (fields in [speech-screen](../speech-screen/speech-screen-design.md)) |
 | `speech_labels` | `curated/speech_labels/` | none | label import (`audio_file_id`, `start_s: float \| None`, `end_s: float \| None`, `reviewer_id`, `labeled_utc`; null bounds mean "no speech"; no audio) |
 | `waivers` | `curated/waivers/` | none | `runs unflag` (see [runs](../runs/runs-design.md) § Waivers) |
@@ -393,7 +414,8 @@ QUALIFY row_number() OVER (PARTITION BY audio_file_id ORDER BY mask_version DESC
 succeeded detect run on that file, whichever mask version it analyzed, with
 `overlaps_current_mask` added. A re-mask therefore leaves a file's detections in place; the
 windows it covers drop out through `overlaps_current_mask`. Run-level tables (`media_retrievals`,
-`geo_species_lists`, `sites`, `runs`) follow the run-level rule in
+`retrieval_anomalies`, `geo_species_lists`, `sites`, `runs`, and `ingest`'s `deployments` rows)
+follow the run-level rule in
 [runs](../runs/runs-design.md) § Current Rows.
 
 ## Querying with DuckDB
@@ -422,6 +444,8 @@ allowance (see [archive](../archive/archive-design.md) § Cost).
 | Detection identity | Hash of model, file, window start, and label | Include `mask_version` in the hash | A re-mask would change every detection ID in the file, orphaning labels, review clips, and published `occurrenceID`s for windows the new mask doesn't touch. |
 | Mask-overlap flag | Stored `overlaps_mask_at_detect` plus derived `overlaps_current_mask` | One stored `overlaps_mask` | A stored flag can't reflect a later re-mask; one name for two meanings invites using the stale one. |
 | Site time zone | IANA zone per site | One project-wide analysis zone | Sites in different zones stay representable, and the zone is a property of the place, not of the operator. |
+| Anomalies from later stages | A run-level `retrieval_anomalies` table | Rewrite the part's MediaRetrieval row with the added anomaly | A rewritten row would have to copy every ingest field and would race with a re-ingest of the part; an append-only table keeps each stage's record its own. |
+| Deployment updates from ingest | Run-level rows written at ingest's run end | A separate `admin` run per update; one ingest file's unit owning the row | Firmware and clock problems are learned during ingest, not by an operator command, and belong to the retrieval rather than to any one file. |
 
 ## Open Questions & Future Decisions
 

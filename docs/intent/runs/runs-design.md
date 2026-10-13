@@ -56,16 +56,20 @@ The **idempotency key** of a unit is the SHA-256 of a canonical JSON document:
   originals, `original_pcm_sha256` for `detect` (see [detect](../detect/detect-design.md)), the
   current `masked_sha256` for `rescreen`, and for `speech-label` the SHA-256 of the file's rows
   in `labels.csv` in canonical form, so importing the same labels again is a no-op and changed
-  labels re-run the unit.
+  labels re-run the unit. A `purge` unit's input is the original file's SHA-256. An `admin`
+  unit's input is the SHA-256 of the canonical JSON of the command's arguments, so the same
+  change requested again is a no-op and a different one (for example, `deployment end` with
+  another time) is a new unit.
 - `models` lists every versioned component whose output the stage depends on: model files for
   `screen`, `detect`, and `rescreen`, and the recorder adapter (`adapter:<key>:<version>`) for
   `ingest`.
 - `stage_version` is an integer constant in each stage's module. It increments when a code
   change alters that stage's outputs. Other code changes leave keys unchanged, so a refactor
   doesn't trigger reprocessing; the git commit is still recorded in the run.
-- A `stage_version` bump only affects units the stage can still reach. `screen` and
-  `archive` read quarantine originals, so a bump to either re-processes only files not yet
-  purged. Purged files are reprocessed through `rescreen` (from the archive), which has its own
+- A `stage_version` bump only affects units the stage can still reach. `screen` processes
+  only files not yet archived (once a file is archived, only `rescreen` changes its mask), so a
+  bump to it re-processes only those. `archive` reads quarantine originals, so a bump to it
+  re-processes only files not yet purged. Purged files are reprocessed through `rescreen` (from the archive), which has its own
   `stage_version`. `detect` reads the archive, so a bump to it covers every archived file.
 - `params_hash` is the SHA-256 of the stage's parameters serialized as canonical JSON (sorted
   keys, no whitespace, floats in `repr` form).
@@ -128,6 +132,9 @@ Purge is the one stage whose output is a local action. It deletes first and then
 ledger rows in the next batch write, or at run end after the last batch; a purge unit whose original is already gone, and whose
 archive success is in the store, is recorded as `succeeded`, so a crash between the deletion and
 the ledger write repairs itself ([intake](../ingest/intake/intake-design.md) § Purge).
+Purges that the archive stage performs belong to the archive run: their ledger rows carry the
+archive run's `run_id` in the `stage=purge` partition, and the run record's `counts` report
+them separately (`counts.by_stage`). `urbanbio purge` creates its own `purge` run.
 
 So no original is ever purged, and no work FLAC deleted, before the store records the outputs
 that justify it, and a crash never yields duplicate rows that readers count.
@@ -150,7 +157,9 @@ still produces current rows for every unit that succeeded; a run that crashed (`
 forever) does too, for every batch whose ledger part was written.
 
 **Run-level tables.** A few tables hold rows about a run or a retrieval rather than about one
-unit: `media_retrievals`, `geo_species_lists`, `sites`, and `runs`. Each is written once, when the
+unit: `media_retrievals`, `retrieval_anomalies`, `geo_species_lists`, `sites`, and `runs`, and
+the `deployments` rows an `ingest` run writes (a filled-in `firmware_version` or a set
+`timestamp_issues`). Each is written once, when the
 run ends. Its rows count when the run's record has ended (any status other than `running`). A
 crashed run's run-level rows are never written or are ignored, and the run that resumes the work
 writes them again, computed over the whole scope (for `media_retrievals`, every file of the part,
@@ -206,7 +215,7 @@ and rewritten at the end. Its summary row goes to the `runs` table.
 | `params` | object | Stage parameters (public-safe; see below) |
 | `params_hash` | `str` | |
 | `scope` | object | What was requested, e.g. `{"retrieval_id": "site1-dep001-r004"}` |
-| `counts` | object | `units_total`, `skipped`, `succeeded`, `flagged`, `failed` |
+| `counts` | object | `units_total`, `skipped`, `succeeded`, `flagged`, `failed`, and the same counts per ledger stage in `by_stage` (an archive run also records `purge` units) |
 | `resources` | object | `workers`, `cpu_count`, `mem_total_mb`, `peak_rss_mb` (largest resident set of the main process or any worker), `wall_clock_s` |
 | `errors` | list | `unit_id`, `reason_code`, `message` (no audio, no coordinates) |
 | `outputs` | list | Tables and key prefixes written |

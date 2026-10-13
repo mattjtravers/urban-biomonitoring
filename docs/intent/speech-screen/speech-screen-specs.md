@@ -12,6 +12,7 @@ EARS requirements for [speech-screen](speech-screen-design.md). Markers: `[x]` i
 - [ ] **SCREEN-DET-005**: When the `silero-vad` detector screens a file, the system shall resample the samples from 48 kHz to 16 kHz with `scipy.signal.resample_poly(x, 1, 3)` as float32 in [-1, 1] and run `silero-vad==6.2.3` with `load_silero_vad(onnx=True)`, `threshold = screen.silero_threshold`, `min_speech_duration_ms = screen.silero_min_speech_ms`, `min_silence_duration_ms = 100`, `speech_pad_ms = 30`, and `window_size_samples = 512`.
 - [ ] **SCREEN-DET-006**: When `silero-vad` returns a speech segment, the system shall record a SpeechEvent with its start and end in seconds and the maximum frame probability within it as the score.
 - [ ] **SCREEN-DET-007**: The system shall not mask BirdNET's `Human non-vocal` or `Human whistle` classes unless they are listed in `screen.birdnet_mask_labels`.
+- [ ] **SCREEN-SCOPE-001**: When `urbanbio screen --retrieval R` runs, the system shall screen only the retrieval's audio files whose current `ingest` unit succeeded and that have no succeeded `archive` unit, leaving archived files to `rescreen`.
 
 ## Padding, Merging, and the Mask
 
@@ -29,11 +30,11 @@ EARS requirements for [speech-screen](speech-screen-design.md). Markers: `[x]` i
 - [ ] **SCREEN-OUT-001**: When a file is screened, the system shall write one `screen_file_stats` row with `audio_file_id`, `run_id`, `birdnet_max_score`, `silero_max_prob`, `event_count`, and `masked_seconds`.
 - [ ] **SCREEN-OUT-002**: The system shall write SpeechEvents to the `speech_events` table with offsets, detector, label, and score only, with no audio or derived features.
 - [ ] **SCREEN-OUT-003**: When a screen run ends, the system shall report per-retrieval totals of events per detector, files with any event, masked seconds, and masked fraction of recorded time.
-- [ ] **SCREEN-OUT-004**: When more than `screen.max_masked_fraction` of a retrieval's recorded time is masked, the system shall record a `high_masked_fraction` retrieval anomaly and still mask every event.
+- [ ] **SCREEN-OUT-004**: When more than `screen.max_masked_fraction` of a retrieval's recorded time is masked, the system shall record a `high_masked_fraction` row in `retrieval_anomalies` (DATA-RET-004) and still mask every event.
 
 ## Speech Sampling
 
-- [ ] **SCREEN-SAMPLE-001**: When `urbanbio speech sample --retrieval R --n N` runs, the system shall choose `N` screened, not-yet-archived files of the retrieval in equal thirds from: files where a detector fired; near misses (no event, but `birdnet_max_score` ≥ 0.02 or `silero_max_prob` ≥ 0.15); and the rest at random.
+- [ ] **SCREEN-SAMPLE-001**: When `urbanbio speech sample --retrieval R --n N` runs, the system shall choose `N` screened, not-yet-archived files of the retrieval whose current `ingest` unit succeeded, in equal thirds from: files where a detector fired; near misses (no event, but `birdnet_max_score` ≥ 0.02 or `silero_max_prob` ≥ 0.15); and the rest at random.
 - [ ] **SCREEN-SAMPLE-002**: When `urbanbio speech sample` selects files, the system shall use a seeded RNG and record the seed in the run.
 - [ ] **SCREEN-SAMPLE-003**: When `urbanbio speech sample` selects a file, the system shall hard-link the original into `quarantine/speech-labeling/<audio_file_id>.wav` and record the hold link in the unit's `output_refs`.
 - [ ] **SCREEN-SAMPLE-004**: When `urbanbio process --speech-sample N` runs, the system shall run speech sampling after `screen` and before `archive`.

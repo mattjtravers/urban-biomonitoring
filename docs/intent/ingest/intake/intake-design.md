@@ -110,7 +110,11 @@ refused.
    deployment's `schedule.utc_offset_minutes`.
 6. **Write** `audio_files` rows and ingest ledger rows batch by batch as files finish
    ([runs](../../runs/runs-design.md) § Write Order), and the part's `media_retrievals` row when
-   the run ends (a run-level table; [runs](../../runs/runs-design.md) § Current Rows).
+   the run ends (a run-level table; [runs](../../runs/runs-design.md) § Current Rows). At run
+   end, ingest also writes a new `deployments` row when the deployment's `firmware_version` is
+   still null and a file of this part reports one (the first such file by `start_utc`), or when
+   the retrieval's `clock_drift` anomaly sets `timestamp_issues`, combining both changes in one
+   row ([data-model](../../data-model/data-model-design.md) § Deployment).
 
 **Resuming.** A crash can leave a part registered in the store either before or after `PATH`
 was moved, and re-running the same command must finish it without registering it twice:
@@ -245,15 +249,15 @@ unit: the file is deleted first, and the purge ledger rows follow in the next ba
 run end after the last batch. A
 purge unit whose original is already gone, and whose archive success is in the store, is
 recorded as `succeeded` ([runs](../../runs/runs-design.md) § Write Order). `urbanbio purge --retrieval R` sweeps up anything left (files archived with
-`--no-purge`, superseded files, device logs). An original is
-deleted when all of these hold:
+`--no-purge`, superseded files, device logs). Apart from the
+exceptions below, an original is deleted only when all of these hold:
 
-1. The archive ledger **in the store** shows the unit (`audio_file_id`, mask version 1)
-   `succeeded`, which includes the bit-identity and store-write checks
+1. The archive ledger **in the store** shows the unit `<audio_file_id>:v1` `succeeded`, which includes the bit-identity and store-write checks
    ([archive](../../archive/archive-design.md) § Archive Flow). A result held only in the running
    process doesn't count ([runs](../../runs/runs-design.md) § Write Order).
 2. The file isn't held for speech labeling.
-3. The file isn't flagged at any stage.
+3. No stage's latest ledger row for the file is `flagged`. A check that was waived and whose
+   unit then succeeded no longer blocks the purge.
 4. None of its current `ingest`, `screen`, or `archive` successes came from a run with
    uncommitted code ([runs](../../runs/runs-design.md) § Run Record). Each of those stages reads
    the original, so a clean re-run needs it in the quarantine.

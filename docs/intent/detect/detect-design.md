@@ -118,8 +118,10 @@ the acoustic model.
    `year_month`), then its ledger part, then delete the batch's work-directory FLACs
    ([runs](../runs/runs-design.md) § Write Order).
 
-A file whose checksum doesn't match `masked_sha256` is flagged (Tenet 3), except an interrupted
-re-mask (the object's `mask-version` is one above the recorded version), which marks the unit
+A file whose checksum doesn't match `masked_sha256` is flagged `archive_conflict` (Tenet 3),
+except an interrupted re-mask (the object's `mask-version` is one above the recorded version and
+its `run-id` names an earlier `rescreen` run; [archive](../archive/archive-design.md)
+§ Re-masking), which marks the unit
 `failed` (`remask_in_progress`) so it is retried once `rescreen` has finished it
 ([archive](../archive/archive-design.md) § Re-masking). A file that fails to decode, or a model
 error, marks the unit `failed`, and the next run retries it.

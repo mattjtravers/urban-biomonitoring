@@ -26,9 +26,9 @@ class Exporter(Protocol):
     def dwca(self, occurrences: Table, sites: Table, out_dir: Path) -> Path: ...      # Darwin Core Archive zip
 
 class ClipPublisher(Protocol):
-    def candidates(self, detections: Table) -> Table: ...      # never overlaps_mask; calibrated taxa only
+    def candidates(self, detections: Table) -> Table: ...      # detections_current; never overlaps_current_mask; calibrated taxa only
     def recheck(self, clip: MaskedClip) -> SpeechCheckResult: ...  # second speech check (HLD §3.6)
-    def withdraw(self, detection_ids: Sequence[str]) -> None: ...  # after re-masking
+    def withdraw(self, detection_ids: Sequence[str]) -> None: ...  # omit clips the archive deleted after a re-mask
 
 class SiteBuilder(Protocol):
     def build(self, export_dir: Path, out_dir: Path) -> Path: ...  # static site with DuckDB-WASM
@@ -36,15 +36,20 @@ class SiteBuilder(Protocol):
 
 Policy the specs will encode:
 
-- **Release gate.** Publish refuses inputs from runs that are `partial`, `failed`, or
-  `git_dirty` ([runs](../runs/runs-design.md)).
+- **Release gate.** Publish reads only current rows: rows whose unit the ledger records as
+  `succeeded` ([runs](../runs/runs-design.md) § Current Rows). Flagged and failed units are
+  therefore excluded unit by unit, and a run that ended `partial` still contributes its
+  succeeded units. Each release's notes count the units excluded. Publish refuses any input
+  whose current rows come from a `git_dirty` run.
 - **Columns.** Public tables never include `original_filename`, `archive_key`, `sidecar_key`,
   device serials, recorder names, or anything from sidecars or device logs.
 - **Clip re-check.** Each clip is re-screened with both speech detectors at stricter
   thresholds than the archive screen (proposed: BirdNET `Human vocal` ≥ 0.05 at 0.5 s hop;
   Silero ≥ 0.20). Any hit rejects the clip. Clips carry no metadata tags.
-- **Withdrawal.** A re-mask that touches a published clip's interval withdraws the clip in the
-  next release and deletes it from `clips/` (the pipeline's only delete permission).
+- **Withdrawal.** A re-mask deletes every clip that overlaps the newly masked intervals from
+  `clips/` (the pipeline's only delete permission;
+  [archive](../archive/archive-design.md) § Re-masking). The next release omits those clips,
+  so they leave the published site.
 
 ## Darwin Core Mapping
 
@@ -83,6 +88,7 @@ CC BY-NC-SA 4.0 license places no conditions on published detection data. If it 
 | Hosting | GitHub Pages | A public store prefix | No public store surface; no egress charges for downloads. |
 | Output control | Allowlist | Denylist of private columns | A new private column is private by default. |
 | Clip check | Stricter second screen; reject on any hit | Reuse archive screen results | HLD §3.6 requires a second check. Clips are short and public, so false rejections are cheap. |
+| Release gate | Per unit: succeeded units only; dirty runs refused | Refuse any `partial` run | Flagged units (e.g. pre-deployment test recordings) are routine, so a run-level gate would block nearly every release. |
 
 ## Open Questions & Future Decisions
 

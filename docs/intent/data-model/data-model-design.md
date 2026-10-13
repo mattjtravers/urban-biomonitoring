@@ -35,15 +35,17 @@ Principles:
 | MediaRetrieval | `retrieval_id` | `<deployment_id>-r<NNN>`, e.g. `site1-dep001-r004` | Next sequence number per deployment |
 | AudioFile | `audio_file_id` | `af-<16 hex>` | First 16 hex characters of the original file's SHA-256 |
 | SpeechEvent | `speech_event_id` | `se-<16 hex>` | SHA-256 of `audio_file_id`, `run_id`, `detector`, `start_s` |
-| Detection | `detection_id` | `det-<16 hex>` | SHA-256 of `model_id`, `audio_file_id`, `mask_version`, `start_s`, `label` |
+| Detection | `detection_id` | `det-<16 hex>` | SHA-256 of `model_id`, `audio_file_id`, `start_s`, `label` |
 | Label | `label_id` | `lbl-<16 hex>` | SHA-256 of `detection_id`, `reviewer_id`, `labeled_utc` |
 | Calibration | `calibration_id` | `cal-<16 hex>` | SHA-256 of `taxon_key`, `model_id`, `label_set_hash` |
 | Run | `run_id` | `<stage>-<YYYYMMDDTHHMMSSZ>-<4 hex>` | Stage, start time, random suffix |
 
-A `detection_id` is stable across runs: re-running the same model on the same masked audio
-produces the same IDs, so reviewers' labels and published `occurrenceID`s keep pointing at the
-same detection. Two runs of one model with different parameters can produce rows with the same
-`detection_id`; their `run_id` tells them apart, and confidence may differ.
+A `detection_id` is stable across runs and re-masks: the same model, file, window, and label
+give the same ID, so reviewers' labels, review clips, and published `occurrenceID`s keep pointing
+at the same detection. Two runs of one model with different parameters, or a run on a later mask
+version, can produce rows with the same `detection_id`; their `run_id` and `mask_version` tell
+them apart, and confidence may differ. A detection whose window a later mask covers is excluded
+by its current-mask overlap (see Detection), not by a change of ID.
 
 All IDs match `^[a-z0-9-]+$`. Sixteen hex characters (64 bits) keep the collision probability
 negligible at the project's scale (about 10⁶ audio files per decade).
@@ -65,6 +67,7 @@ Types are Python/Pydantic types. "Null" means the field is `T | None`. Every mod
 | `coordinate_uncertainty_m` | `int` | no | Declared uncertainty after generalization (DwC `coordinateUncertaintyInMeters`) |
 | `generalization` | `str` | no | Human-readable rule, e.g. "rounded to 0.01°" (DwC `dataGeneralizations`) |
 | `habitat` | `str` | yes | Free text, no location names |
+| `timezone` | `str` | no | IANA time zone of the site (e.g. `Etc/UTC`), for local dates in curate |
 | `nws_station_id` | `str` | yes | Nearest NWS observation station, for the curate stage |
 
 A Site is a fixed location. A recorder moved more than 500 m (the intake position-check
@@ -129,7 +132,8 @@ AudioFile).
 | `expected_file_count` | `int` | yes | From the device log, when the adapter provides one |
 | `file_count` | `int` | no | Audio files ingested |
 | `total_bytes` | `int` | no | Original bytes ingested |
-| `manifest_sha256` | `str` | no | SHA-256 of the retrieval manifest (sorted paths, sizes, checksums) |
+| `part` | `int` | no | Ingest part number within the retrieval: 1, then 2, … for parts added with `--retrieval R` |
+| `manifest_sha256` | `str` | no | SHA-256 of this part's manifest (sorted paths, sizes, checksums) |
 | `battery_start_v` | `float` | yes | First logged voltage |
 | `battery_end_v` | `float` | yes | Last logged voltage |
 | `battery_min_v` | `float` | yes | |
@@ -138,13 +142,13 @@ AudioFile).
 | `anomalies` | `list[Anomaly]` | no | See below |
 | `ingest_run_id` | `str` | no | FK → Run |
 
-A retrieval copied and ingested in parts produces one MediaRetrieval row per ingest run. The
+A retrieval copied and ingested in parts produces one MediaRetrieval row per part. The
 `current_retrievals` view combines them per `retrieval_id`: counts and bytes are recomputed
 from `audio_files`, time spans and battery values take the minimum or maximum across rows, and
 anomalies are concatenated.
 
-`Anomaly`: `code: str` (e.g. `gap`, `reboot`, `file_count_mismatch`, `timestamp_mismatch`,
-`low_battery`, `clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`,
+`Anomaly`: `code: str` (e.g. `gap`, `reboot`, `file_count_mismatch`, `low_battery`,
+`clock_drift`, `offset_change`, `position_mismatch`, `unknown_file`, `summary_unparseable`,
 `high_masked_fraction`), `start_utc: datetime | None`, `end_utc: datetime | None`,
 `detail: str`.
 
@@ -178,7 +182,8 @@ One recording. Static facts about the original file. Camtrap DP `media` alignmen
 | `sidecar_key` | `str` | no | Store key of the header sidecar |
 
 On the `s3` backend, the HLD's storage tier is derived too: the `audio_file_tier` view reports
-`STANDARD` until `glacier_transition_days` after the current mask version's `created_utc`, then
+`STANDARD` until `store.glacier_transition_days` ([store](../store/store-design.md)
+§ Configuration) after the current mask version's `created_utc`, then
 `GLACIER_IR` (files under 128 KB, such as fully masked minutes, stay `STANDARD`). Lifecycle
 transitions run asynchronously in AWS S3, so the view gives the billed class, which starts on
 the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for every file.
@@ -186,6 +191,7 @@ the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for e
 A file's processing status is derived from the stage-unit ledger
 ([runs](../runs/runs-design.md)) rather than stored on the record. The `audio_file_status` view
 reports the furthest stage completed: `quarantined` → `screened` → `archived` → `purged`, or
+`held` (screened and held for speech labeling; not archived until its labels are imported), or
 `flagged` (stopped with a recorded reason; never purged automatically).
 
 ### AudioMaskVersion
@@ -203,7 +209,7 @@ archive holds only the latest version (see [archive](../archive/archive-design.m
 | `masked_seconds` | `float` | no | Total zeroed duration |
 | `run_id` | `str` | no | FK → Run |
 | `created_utc` | `datetime` | no | |
-| `storage_class` | `str` | no | Storage class at write time: `STANDARD` on `s3`, `FILESYSTEM` on `filesystem` |
+| `storage_class` | `str` | no | Storage class at write time, fixed by the backend: `STANDARD` on `s3`, `FILESYSTEM` on `filesystem` |
 
 ### SpeechEvent
 
@@ -240,9 +246,15 @@ One speech detector hit. No audio content.
 | `is_target_taxon` | `bool` | no | False for the model's non-taxon classes (human, engine, dog, noise, …) |
 | `confidence` | `float` | no | 0–1, model output after sigmoid |
 | `in_geo_list` | `bool` | no | Taxon passes the location/date filter for this site and week |
-| `overlaps_mask` | `bool` | no | Window intersects a masked interval |
+| `overlaps_mask_at_detect` | `bool` | no | Window intersected a masked interval of the mask version analyzed (`mask_version`) |
 | `model_id` | `str` | no | e.g. `birdnet-acoustic-2.4-fp32` |
 | `mask_version` | `int` | no | Mask version of the audio analyzed |
+
+`overlaps_mask_at_detect` describes the audio the model saw and never changes. Whether a
+detection's window is covered by the file's **current** mask is a separate, derived column,
+`overlaps_current_mask`, computed in the `detections_current` view against `current_masks`.
+Every consumer that excludes masked windows (validate, curate, publish) uses
+`overlaps_current_mask`.
 
 ### Label, Calibration, WeatherObs, NoiseEvent, DailySummary
 
@@ -260,7 +272,7 @@ These are defined at interface level for Phase 1; their stages are specified in
   `precipitation_mm`, `relative_humidity_pct` (all nullable except IDs and time).
 - **NoiseEvent:** `noise_event_id`, `audio_file_id`, `start_s`, `end_s`, `source: Literal["model",
   "manual"]`, `noise_class: str`, `score: float | None`, `run_id`.
-- **DailySummary:** `site_id`, `date_local`, `taxon_key`, `calibration_id: str | None`,
+- **DailySummary:** `site_id`, `date_local` (in the site's `timezone`), `taxon_key`, `calibration_id: str | None`,
   `validation_status: Literal["calibrated", "unvalidated"]`, `detection_count`,
   `active_minutes`, `recorded_minutes`, `first_detection_utc`, `last_detection_utc`, `run_id`.
 
@@ -293,39 +305,45 @@ next to its Pydantic model. A test asserts that the two declarations agree. Each
 `urbanbio.schema_version` in its key-value metadata. Additive changes (a new nullable column)
 increment the minor version; any other change is a new major version and a new table path.
 
-Files are immutable and written once per (run, unit) so writes are idempotent: rewriting the
-same unit produces the same file name.
+Files are immutable. A stage writes one part file per run × batch × partition, named
+`<run_id>-<batch>.parquet`, before the ledger rows that cite it
+([runs](../runs/runs-design.md) § Write Order). A row counts only when a `succeeded` ledger row
+for its unit cites its run ([runs](../runs/runs-design.md) § Current Rows), so part files left by
+a crashed batch are ignored, and a retry never produces rows that are counted twice.
 
 | Table | Key prefix in the store | Partitioning (Hive style) | One file per |
 |---|---|---|---|
-| `sites` | `curated/sites/` | none | config load (overwritten; derived from config) |
+| `sites` | `curated/sites/` | none | run whose site configuration differs from the latest file (`<run_id>.parquet`; generalized values only) |
 | `deployments` | `curated/deployments/` | none | deployment change (`<deployment_id>-<run_id>.parquet`) |
-| `media_retrievals` | `curated/media_retrievals/` | `site_id=` | ingest run |
-| `audio_files` | `curated/audio_files/` | `site_id=`, `year_month=` | ingest run × retrieval |
-| `audio_mask_versions` | `curated/audio_mask_versions/` | `site_id=`, `year_month=` | archive run × retrieval |
-| `speech_events` | `curated/speech_events/` | `site_id=`, `year_month=` | screen run × retrieval |
-| `screen_file_stats` | `curated/screen_file_stats/` | `site_id=`, `year_month=` | screen run × retrieval (fields in [speech-screen](../speech-screen/speech-screen-design.md)) |
+| `media_retrievals` | `curated/media_retrievals/` | `site_id=` | ingest run (one row per part) |
+| `audio_files` | `curated/audio_files/` | `site_id=`, `year_month=` | ingest run × batch |
+| `audio_mask_versions` | `curated/audio_mask_versions/` | `site_id=`, `year_month=` | archive or rescreen run × batch |
+| `speech_events` | `curated/speech_events/` | `site_id=`, `year_month=` | screen or rescreen run × batch |
+| `screen_file_stats` | `curated/screen_file_stats/` | `site_id=`, `year_month=` | screen run × batch (fields in [speech-screen](../speech-screen/speech-screen-design.md)) |
 | `speech_labels` | `curated/speech_labels/` | none | label import (`audio_file_id`, `start_s: float \| None`, `end_s: float \| None`, `reviewer_id`, `labeled_utc`; null bounds mean "no speech"; no audio) |
 | `waivers` | `curated/waivers/` | none | `runs unflag` (see [runs](../runs/runs-design.md) § Waivers) |
-| `detections` | `curated/detections/` | `model_id=`, `site_id=`, `year_month=` | detect run × retrieval |
+| `detections` | `curated/detections/` | `model_id=`, `site_id=`, `year_month=` | detect run × batch |
 | `geo_species_lists` | `curated/geo_species_lists/` | `model_id=` | detect run |
 | `runs` | `curated/runs/` | `stage=` | run |
-| `stage_units` | `curated/stage_units/` | `stage=` | run (see [runs](../runs/runs-design.md)) |
+| `stage_units` | `curated/stage_units/` | `stage=` | run × batch (see [runs](../runs/runs-design.md)) |
 
 `year_month` is the UTC `YYYY-MM` of the file start. Interface-level tables (`labels`,
 `calibrations`, `weather_obs`, `noise_events`, `daily_summary`) follow the same pattern and are
 specified with their stages.
 
-Latest-version reads are views in DuckDB rather than stored state: `current_masks`,
+Latest-version reads are views in DuckDB rather than stored state: one `<table>_current` view
+per stage output table (the current-rows rule), plus `current_sites`, `current_masks`,
 `current_deployments`, `current_retrievals`, `audio_file_status`, and `audio_file_tier`. For
 example:
 
 ```sql
 CREATE VIEW current_masks AS
-SELECT * FROM read_parquet('<store>/curated/audio_mask_versions/**/*.parquet',
-                           hive_partitioning = true)
+SELECT * FROM audio_mask_versions_current
 QUALIFY row_number() OVER (PARTITION BY audio_file_id ORDER BY mask_version DESC) = 1;
 ```
+
+`detections_current` holds, for each (`audio_file_id`, `model_id`), the rows of the latest
+succeeded detect run on the file's current mask version, with `overlaps_current_mask` added.
 
 ## Querying with DuckDB
 
@@ -336,8 +354,8 @@ one view per table over `read_parquet(store.table_glob('curated/<table>/'), hive
 true, union_by_name = true)`, so partition columns are queryable and filters on them prune
 files. `<store>` in the examples above stands for that glob's root.
 
-Curated tables are small (detections are on the order of 10⁶–10⁷ rows a year, tens to hundreds
-of MB), so reading them from an `s3` store onto any host stays within the monthly free egress
+Curated tables are small (detections are on the order of 10⁷ rows a year for two recorders, on
+the order of 100 MB of Parquet), so reading them from an `s3` store onto any host stays within the monthly free egress
 allowance (see [archive](../archive/archive-design.md) § Cost).
 
 ## Decisions & Alternatives
@@ -350,6 +368,9 @@ allowance (see [archive](../archive/archive-design.md) § Cost).
 | Camtrap DP alignment | Mirror deployment fields and media mapping; keep MediaRetrieval as a project entity | Store Camtrap DP tables directly | The audio branch needs fields Camtrap DP lacks (sample rate, schedule). A field mapping lets the image branch export Camtrap DP without the audio branch depending on its schema. |
 | Table layout | Hive-partitioned Parquet, one immutable file per run × unit | A single growing file per table; a DuckDB database file in the store | Immutable files make writes idempotent and safe to retry, and DuckDB and DuckDB-WASM read them directly. |
 | Detection table key | Partition by `model_id` first | Partition by run | Most queries compare or select a model. Runs within a model are filtered by `run_id`. |
+| Detection identity | Hash of model, file, window start, and label | Include `mask_version` in the hash | A re-mask would change every detection ID in the file, orphaning labels, review clips, and published `occurrenceID`s for windows the new mask doesn't touch. |
+| Mask-overlap flag | Stored `overlaps_mask_at_detect` plus derived `overlaps_current_mask` | One stored `overlaps_mask` | A stored flag can't reflect a later re-mask; one name for two meanings invites using the stale one. |
+| Site time zone | IANA zone per site | One project-wide analysis zone | Sites in different zones stay representable, and the zone is a property of the place, not of the operator. |
 
 ## Open Questions & Future Decisions
 

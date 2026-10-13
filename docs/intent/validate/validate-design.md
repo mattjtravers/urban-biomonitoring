@@ -23,7 +23,8 @@ Package: `urbanbio.validate`.
 class Sampler(Protocol):
     def draw(self, detections: Table, *, model_id: str, per_stratum: int, seed: int) -> ReviewBatch: ...
     # Strata: taxon × confidence bin (default bins: [0.10, 0.25), [0.25, 0.50), [0.50, 0.75), [0.75, 1.00]).
-    # Only target taxa with in_geo_list or a minimum detection count; never detections with overlaps_mask.
+    # Draws from detections_current only. Only target taxa with in_geo_list or a minimum
+    # detection count; never detections with overlaps_current_mask.
 
 class ReviewTool(Protocol):
     def export(self, batch: ReviewBatch, clips: ClipSource) -> Path: ...   # task file for the tool
@@ -40,8 +41,11 @@ class AgreementAnalyzer(Protocol):
     # For co-located recorders: per-taxon agreement over matched time windows.
 ```
 
-Review clips are cut from **archived masked audio** around each detection (the 3 s window plus
-1.5 s of context each side) and stored privately at `clips/<detection_id>.flac`. `unsure`
+Review clips are cut from the **current version of the archived masked audio** around each
+detection (the 3 s window plus 1.5 s of context each side) and stored privately at
+`clips/<detection_id>.flac`. A re-mask that overlaps a clip deletes it
+([archive](../archive/archive-design.md) § Re-masking); a later review cuts it again from the new
+version. `unsure`
 labels are excluded from fitting. A calibration needs at least `min_labels` (default 50, at
 least 10 of them `correct`) or the taxon stays `unvalidated`.
 
@@ -50,11 +54,13 @@ least 10 of them `correct`) or the taxon stays `unvalidated`.
 **Evaluate Whombat first**, with Label Studio as the alternative and a minimal local UI only if
 both fail. Criteria: spectrogram plus audio playback of clips, a correct/incorrect/unsure
 verdict with a true-species field, file-based import/export with no cloud service, and running
-locally on the reviewer's host. Review uses only masked clips from the store, so it may run on
-any host configured with the `processing` profile and access to the store; it never reads the
-quarantine. A review-only host is installed like any processing host
-([install](../install/install-design.md)), so `config check` passes, and its quarantine
-simply stays empty.
+locally on the reviewer's host. Review uses only masked clips from the store and never reads
+the quarantine. It runs on the **processing host**, the only host configured with the
+`processing` profile. Another host would need the profile's private values, including exact
+site coordinates (`URBANBIO_SITES`) and a store key that can write the archive, which review
+doesn't need. Review on another host waits for a `review` profile with no site secrets and a
+read-only store key ([config-cli](../config-cli/config-cli-design.md) § Deferred), which is an
+HLD §2 change.
 
 | Candidate | License | Notes |
 |---|---|---|
@@ -68,6 +74,7 @@ simply stays empty.
 |---|---|---|---|
 | Calibration model | Logistic on logit(confidence), per taxon × model | Fixed global threshold; isotonic regression | Follows Wood & Kahl (2024) as the HLD specifies. Isotonic needs more labels per species than a small project collects. |
 | Review clip source | Archived masked audio | Quarantine originals | Originals are purged within days. Masked audio is the reprocessing source (HLD §5.2). |
+| Review host | The processing host | Any host with the `processing` profile | A second processing-profile host would hold exact coordinates and an archive-writing key only to play masked clips. |
 
 ## Open Questions & Future Decisions
 

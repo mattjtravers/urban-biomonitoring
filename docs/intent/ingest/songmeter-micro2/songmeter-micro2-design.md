@@ -141,13 +141,15 @@ Parsing rules:
   naive local times, and intake converts them using the offset of the audio files from the same
   power-on session ([intake](../intake/intake-design.md) § Ingest Flow, step 5).
 - **TODO: confirm from first real card:** `DATE` and `TIME` formats, whether `LAT`/`LON` carry
-  signs as well as `NS`/`EW`, and line endings. Until confirmed, a row that doesn't parse
-  flags the device log (not the audio files) with `summary_unparseable`.
-- Low-battery anomaly threshold: 4.2 V (configurable). The recorder shuts down at about 3.7 V
+  signs as well as `NS`/`EW`, and line endings. Until confirmed, a row that doesn't parse is
+  skipped and the retrieval gets a `summary_unparseable` anomaly naming the row; the audio
+  files aren't flagged, and the summary file is still archived verbatim.
+- Low-battery anomaly threshold: 4.2 V (`ingest.songmeter_micro2.low_battery_v` in
+  `config/pipeline.toml`). The recorder shuts down at about 3.7 V
   with alkaline cells [UG p.112], and lithium cells may fail at higher voltages.
 
 The summary file includes the deployment's exact coordinates, so it's archived only to the
-private bucket and never parsed into a persisted table beyond battery and file counts.
+private store and never parsed into a persisted table beyond battery and file counts.
 
 ## Diagnostics Files [UG p.93]
 
@@ -163,15 +165,14 @@ timestamps as `reboot` anomalies and archives them verbatim without parsing.
   its own Time Zone setting mid-deployment, so you should choose to use either standard or
   daylight time for the duration of the deployment" [UG p.30].
 - Consequence: filenames and GUANO timestamps use one offset for the whole deployment, so a
-  deployment spanning a daylight-saving change (e.g., US DST ends 2026-11-01) has no repeated or
-  missing local hour. Intake converts using the recorded offset and never applies DST rules
+  deployment spanning a daylight-saving change has no repeated or missing local hour. Intake converts using the recorded offset and never applies DST rules
   ([intake](../intake/intake-design.md) § Time Normalization).
 - Project preference: set the recorder to UTC (offset 0) if the Configurator's time-zone list
-  offers it. Otherwise use the phone's zone (America/New_York) and rely on the recorded offset.
+  offers it. Otherwise use the site's standard-time offset and rely on the recorded offset.
 - **TODO: confirm from first real card:** whether the Configurator offers UTC; how a
-  deployment configured in daylight time and retrieved after the change is recorded (the
-  offset in GUANO for files on both sides of 2026-11-01); and whether re-pairing at a
-  retrieval changes the offset for subsequent files. Each finding becomes a synthetic fixture
+  deployment configured in daylight time and retrieved after a daylight-saving change is
+  recorded (the offset in GUANO for files on both sides of the change); and whether re-pairing
+  at a retrieval changes the offset for subsequent files. Each finding becomes a synthetic fixture
   test.
 
 ## Interface Implementation Summary
@@ -179,7 +180,7 @@ timestamps as `reboot` anomalies and archives them verbatim without parsing.
 | Method | Behavior |
 |---|---|
 | `list_media(root)` | `Data/*.wav` → audio; `*_Summary.txt` at root → logs; `*.minidiags` → diagnostics; everything else → unknown |
-| `read_audio_metadata(path)` | Filename regex + RIFF/GUANO parse + cross-checks: filename vs `Original Filename`, filename time vs GUANO time, `Samplerate` vs `fmt `, `Length` vs frames, filename prefix vs `WA\|Song Meter\|Prefix` |
+| `read_audio_metadata(path)` | Filename regex + RIFF/GUANO parse + cross-checks: filename vs `Original Filename`, filename time vs GUANO time (more than 1 s apart raises `timestamp_mismatch`), `Samplerate` vs `fmt `, `Length` vs frames, filename prefix vs `WA\|Song Meter\|Prefix` |
 | `read_device_log(listing)` | Parse the summary file into sessions and rows |
 | `header_chunks(path)` | All non-`data` RIFF chunks, verbatim, with offsets |
 
@@ -203,8 +204,8 @@ Cross-check failures raise `AdapterError` with reason codes `filename_unparseabl
 2. Exact GUANO key spellings, `Timestamp` format, and `Audio settings` syntax.
 3. RIFF chunk ID(s) holding the additional settings and schedule metadata.
 4. Summary file `DATE`/`TIME` formats and coordinate sign conventions.
-5. Whether UTC is selectable as the recorder time zone; offset behavior across the 2026-11-01
-   DST change; offset behavior after re-pairing.
+5. Whether UTC is selectable as the recorder time zone; offset behavior across a
+   daylight-saving change; offset behavior after re-pairing.
 6. Whether a file in progress when the batteries fail is truncated, and how it appears in
    GUANO `Length`.
 

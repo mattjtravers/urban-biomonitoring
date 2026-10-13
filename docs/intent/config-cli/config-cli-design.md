@@ -14,8 +14,8 @@ model"), error handling, logging, and the testing strategy.
 Two principles drive it:
 
 - **Private values never reach a stage.** Exact coordinates and account identifiers are loaded
-  once, reduced (coordinates to generalized values), and kept out of every object passed to
-  stage code, run records, and logs.
+  once, reduced (coordinates to generalized values and to distances on request), and kept out of
+  every object passed to stage code, run records, and logs.
 - **A stage is a function, and the CLI is a thin shell.** Each command parses arguments, loads
   configuration, opens a run ([runs](../runs/runs-design.md)), and calls one stage entry point.
   Tests call the same entry points without the CLI.
@@ -183,6 +183,9 @@ duty_on_s = 60
 duty_off_s = 240
 max_file_length_s = 60
 
+[ingest.songmeter_micro2]
+low_battery_v = 4.2                # Low-battery anomaly threshold
+
 [screen]
 padding_s = 2.0
 birdnet_mask_labels = ["Human vocal_Human vocal"]
@@ -193,20 +196,21 @@ silero_threshold = 0.30
 silero_min_speech_ms = 250
 max_masked_fraction = 0.20         # Above this, the retrieval gets an anomaly
 
-[detect]
+[detect]                           # Library parameter names: detect LLD § BirdNET Implementation
 model = "birdnet-acoustic-2.4"
 backend = "litert"
 precision = "fp32"
 confidence_floor = 0.10
+top_k = "none"                     # Every class above the floor
 overlap_s = 0.0
 sigmoid_sensitivity = 1.0
+bandpass_fmin_hz = 0
+bandpass_fmax_hz = 15000
 geo_model = "birdnet-geo-2.4"
 geo_min_confidence = 0.03
 
 [archive]
 flac_compression_level = 0.6       # soundfile scale 0–1; lossless at any level
-glacier_transition_days = 30
-storage_class_on_write = "STANDARD"
 
 [publish]
 coordinate_precision_deg = 0.01
@@ -237,9 +241,13 @@ format as `config/dev-sites.toml`:
 site_id = "site1"
 latitude_exact = 0.0       # Placeholder; real values exist only in the environment
 longitude_exact = 0.0
+timezone = "Etc/UTC"       # IANA zone of the site
 habitat = "residential garden"
 nws_station_id = "XXXX"
 ```
+
+`timezone` must name a zone in the IANA database (checked with `zoneinfo`). It isn't private:
+it is coarser than the published coordinates.
 
 #### `urbanbio config check`
 
@@ -252,7 +260,8 @@ In every profile, it fails when:
   `URBANBIO_CONFIG` is relative, names a missing file, or names one inside the repository
   working tree;
 - a variable required by the profile and backend is missing or empty;
-- the site configuration doesn't parse, or it lacks a site that a deployment references;
+- the site configuration doesn't parse, names an unknown time zone, or lacks a site that a
+  deployment references;
 - a public config value looks like a coordinate pair at a precision finer than
   `coordinate_precision_deg`;
 - a configured path lies inside the repository working tree;
@@ -272,10 +281,17 @@ host reports ([runs](../runs/runs-design.md) § Resource Limits).
 ### Loading and the private boundary
 
 `config.load()` returns a `PipelineConfig` (public fields plus `sites: list[Site]`). Private
-`SiteSecret` objects (with exact coordinates) are used inside `config.load()` only to compute
-each Site's generalized coordinates, then discarded. `PipelineConfig` has no attribute through
-which exact coordinates can be reached. `SiteSecret.__repr__` masks coordinates so a traceback
-can't print them.
+`SiteSecret` objects (with exact coordinates) are held only by a private registry inside the
+`urbanbio.config` module. `PipelineConfig` has no attribute through which exact coordinates can
+be reached. Stages get two kinds of derived values and nothing else:
+
+- each Site's generalized coordinates, computed at load;
+- distances, through `config.site_offset_m(site_id, latitude_deg, longitude_deg) -> float`,
+  which returns the distance in meters from the site's exact position to a given point (used
+  by intake's position check).
+
+No function returns a coordinate derived from the exact ones. `SiteSecret.__repr__` masks
+coordinates so a traceback can't print them.
 
 Exact coordinates exist in two kinds of places, both private: the `URBANBIO_SITES` variable
 (and wherever the operator keeps its value), and the positions recorders write into their own
@@ -303,17 +319,17 @@ Typer application `urbanbio`, installed as a console script.
 | `urbanbio config paths` | Print the configured paths for the current profile, expanded and resolved | — |
 | `urbanbio store init` | Write the store marker for the current profile ([store](../store/store-design.md) § Store Marker) | — |
 | `urbanbio site list` | Show sites with generalized coordinates | — |
-| `urbanbio deployment create --site S --serial N --recorder-name R --start T [--adapter A]` | Register a deployment; refuses to overlap an active deployment on the same device | `admin` |
+| `urbanbio deployment create --site S --serial N --recorder-name R --start T [--adapter A] [--settings FILE]` | Register a deployment; refuses to overlap an active deployment on the same device. `--settings` names a TOML file with any of `sample_rate_hz`, the `schedule` fields, `gain_db`, `mount_height_m`, `mount_heading_deg`, `tags`, and `comments`; unset recording values come from `[recording]` | `admin` |
 | `urbanbio deployment end DEPLOYMENT --end T` | Close a deployment | `admin` |
 | `urbanbio ingest PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R]` | Hash, parse, and register a card copied into the quarantine | `ingest` |
 | `urbanbio screen --retrieval R` | Run both speech detectors; write speech events | `screen` |
-| `urbanbio archive --retrieval R [--no-purge]` | Mask, encode FLAC, write to the store, verify; purge each verified original unless held or `--no-purge` | `archive` |
+| `urbanbio archive --retrieval R [--no-purge]` | Mask, encode FLAC, write to the store, verify; purge verified originals unless `--no-purge`. Files held for speech labeling are skipped until their labels are imported | `archive` |
 | `urbanbio detect --retrieval R \| --all-pending` | Run BirdNET on archived audio | `detect` |
-| `urbanbio purge --retrieval R [--discard UNIT … --reason TEXT]` | Delete verified (or superseded) originals from the quarantine; discard named flagged files without archiving | `purge` |
-| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging each original once verified) → detect` | one run per stage |
+| `urbanbio purge --retrieval R [--discard UNIT\|PATH … --reason TEXT]` | Delete verified (or superseded) originals from the quarantine; discard named flagged audio files (by unit) or `unexpected_audio` device files (by manifest path) without archiving | `purge` |
+| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect` | one run per stage |
 | `urbanbio retrieval status R` | Per-file status; tells whether the card can be wiped | — |
 | `urbanbio speech sample --retrieval R --n N` | Hold a stratified sample in quarantine for speech labeling | `speech-sample` |
-| `urbanbio speech label --import` | Import labels for held samples from `labels.csv` and release the holds | `speech-label` |
+| `urbanbio speech label --import` | Import labels for held samples from `labels.csv` and release the holds; the next `archive --retrieval R` archives the released files | `speech-label` |
 | `urbanbio speech recall` | Report speech recall and masked fraction | — |
 | `urbanbio rescreen --retrieval R` | Re-screen archived audio and re-mask | `rescreen` |
 | `urbanbio runs list [--stage S]` / `runs show RUN` / `runs unflag STAGE UNIT` | Provenance | — |
@@ -345,10 +361,14 @@ Every error carries a `reason_code` (a short constant such as `checksum_mismatch
   flag that unit for a human decision, record the reason, and the run continues with other
   units (Tenet 3). The run ends `partial`.
 - **Unit-level transient failures** (a model or detector raising, a file that fails to decode,
-  a store error after retries on one object) mark that unit `failed`. The next run retries it
-  ([runs](../runs/runs-design.md) § Stage-Unit Ledger). The run ends `partial`.
-- **Run-level errors** (`ConfigError`, `PrivacyError`, `LockError`, and `StorageError` after
-  retries) stop the run immediately with status `failed`.
+  a `StorageError` on that unit's own object after the backend's retries) mark that unit
+  `failed`. The next run retries it ([runs](../runs/runs-design.md) § Stage-Unit Ledger). The
+  run ends `partial`.
+- **Run-level errors** stop the run immediately with status `failed`: `ConfigError`,
+  `PrivacyError`, `LockError`, and a `StorageError` on a run-level write (a batch's table or
+  ledger part files, the run record, the log). Three consecutive units failing with
+  `store_unavailable` are also treated as a run-level `StorageError`, so an unreachable store
+  stops the run instead of failing every remaining unit.
 - **Store retries** are each backend's own ([store](../store/store-design.md)).
 - A `PrivacyError` is never caught by stage code.
 
@@ -358,8 +378,11 @@ Standard library `logging`:
 
 - Console: human-readable, `INFO` by default, `--verbose` for `DEBUG`.
 - File: JSON lines at `<paths.state>/logs/<run_id>.log` with `ts_utc`, `level`, `run_id`,
-  `stage`, `unit_id`, `event`, `message`, plus structured fields. Written to the
-  store at `runs/<run_id>.log` when the run ends.
+  `stage`, `unit_id`, `event`, `message`, plus structured fields. Uploaded to the store at
+  `runs/<run_id>.log` after each batch's ledger write and when the run ends
+  ([runs](../runs/runs-design.md) § Write Order). When a command starts and finds a local log
+  of a run whose store copy is older than the local file (a crashed run), it uploads that log
+  first.
 - Logs contain IDs, offsets, counts, and checksums, never audio samples, exact coordinates,
   credentials, or the bucket name. A logging filter redacts values of `URBANBIO_BUCKET`,
   `URBANBIO_SITES`, and `AWS_*` environment variables if they appear in a message. Store
@@ -428,8 +451,11 @@ wheels), pinned in `.python-version`. The uv version is pinned too
 ## Open Questions & Future Decisions
 
 ### Deferred
-1. A third profile (e.g., `reprocess`, reading the archive without touching media) would add a
-   `config/<profile>.toml` and a value of `URBANBIO_PROFILE`.
+1. A third profile would add a `config/<profile>.toml` and a value of `URBANBIO_PROFILE`, and
+   needs an HLD §2 change. Candidates: `review`, for clip review on a host other than the
+   processing host, with no `URBANBIO_SITES` and a read-only store key
+   ([validate](../validate/validate-design.md) § T3 Resolution; [store](../store/store-design.md)
+   § Deferred); and `reprocess`, reading the archive without touching media.
 
 ## References
 

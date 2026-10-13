@@ -106,8 +106,10 @@ Wipe the card **only** when this prints **safe to wipe**. Then format it as the 
 guide describes, and it is ready for the next deployment. If it doesn't print safe to wipe, it
 lists the files that aren't archived, or why the store doesn't count as a separate copy. Resolve them (step 5's table) and check again.
 
-Speech-labeling holds older than 30 days are listed here too. Label them and run
-`urbanbio speech label --import` so they can be purged.
+If the run held files for speech labeling (`--speech-sample`), they aren't archived yet, and
+the card isn't safe to wipe until they are. Label them, run `uv run urbanbio speech label
+--import`, then `uv run urbanbio archive --retrieval <retrieval_id>` to archive and purge them,
+and check the status again. Holds older than 30 days are listed here too.
 
 ## 7. The second card
 

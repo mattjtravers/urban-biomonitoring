@@ -111,7 +111,8 @@ unmasked files came to being masked.
 ## Speech-Event Log
 
 SpeechEvents (fields in [data-model](../data-model/data-model-design.md)) are written to the
-`speech_events` table, one file per screen run × retrieval. They contain offsets, detector,
+`speech_events` table, one part file per screen run × batch ([runs](../runs/runs-design.md)
+§ Write Order). They contain offsets, detector,
 label, and score: no audio and no derived features. Each run also reports per-retrieval
 totals: events per detector, files with any event, masked seconds, and masked fraction of
 recorded time. That's the cost side of HLD §5.2's accepted trade-off.
@@ -158,10 +159,12 @@ stratum sizes:
 four retrievals. Below target, thresholds and padding are retuned (HLD T5) and affected
 archives are re-screened.
 
-**Misses.** A labeled speech interval outside the mask means speech is about to reach, or has
-reached, the archive. Import turns it into a `manual` SpeechEvent. If the file isn't archived
-yet, the archive stage includes the event in its first mask. If it is, `urbanbio rescreen`
-re-masks it at once.
+**Misses.** A labeled speech interval outside the mask means the screen missed speech. Import
+turns it into a `manual` SpeechEvent. Held files aren't archived until their labels are imported
+([intake](../ingest/intake/intake-design.md) § Speech-Labeling Hold), so the archive includes the
+event in the file's first mask. A miss also means files that weren't sampled may carry speech
+in the archive; when measured recall is below target, thresholds are retuned and the affected
+retrievals re-screened (below).
 
 ## Re-screening and Re-masking
 
@@ -173,9 +176,10 @@ re-masks it at once.
    it to the archive as `mask_version + 1`. Otherwise record the run with no new version.
 
 Re-masking can only add zeros. Earlier masked samples stay masked because the input is already
-masked. Detections from earlier runs that overlap the new mask are excluded downstream by the
-`overlaps_mask` logic in [curate](../curate/curate-design.md), and published clips from
-re-masked intervals are withdrawn by [publish](../publish/publish-design.md).
+masked. Detections whose windows the new mask covers are excluded downstream through
+`overlaps_current_mask` ([data-model](../data-model/data-model-design.md) § Detection), and clips
+that overlap the new mask, for review or published, are deleted by the archive
+([archive](../archive/archive-design.md) § Re-masking).
 
 ## Compute
 

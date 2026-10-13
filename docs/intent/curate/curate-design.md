@@ -23,25 +23,26 @@ Package: `urbanbio.curate`.
 ```python
 class WeatherSource(Protocol):
     def hourly(self, station_id: str, start_utc: datetime, end_utc: datetime) -> list[WeatherObs]: ...
-    # Implementation: NWS API, GET https://api.weather.gov/stations/{station_id}/observations
-    # (no API key; a User-Agent identifying the project is required).
+    # Implementation: NOAA NCEI Global Hourly (Integrated Surface Database), which archives the
+    # hourly observations that NWS stations (ASOS/AWOS) report, with full history.
 
 class SummaryBuilder(Protocol):
-    def daily(self, detections: Table, calibrations: Table, audio: Table, *,
-              run_id: str, analysis_timezone: str) -> list[DailySummary]: ...
+    def daily(self, detections: Table, calibrations: Table, audio: Table, sites: Table, *,
+              run_id: str) -> list[DailySummary]: ...
 ```
 
 Rules the builder will follow (to become CURATE specs):
 
-- Use detections from one chosen run per `model_id`, exclude `overlaps_mask = true` against
-  the **current** mask version, and exclude `is_target_taxon = false` (those become
-  NoiseEvents instead).
+- Read `detections_current` for the chosen `model_id` (current rows per unit; see
+  [runs](../runs/runs-design.md) § Current Rows), exclude `overlaps_current_mask = true`, and
+  exclude `is_target_taxon = false` (those become NoiseEvents instead).
 - A taxon with a calibration uses `threshold_at_target`. Without one it's reported with
   `validation_status = "unvalidated"` and no calibrated counts.
 - `recorded_minutes` comes from archived audio durations, so effort is explicit for
   comparisons between sites and days.
-- `date_local` uses `analysis_timezone` (default `America/New_York`) for diel and phenology
-  views. Stored timestamps stay UTC.
+- `date_local` and diel hours use each site's `timezone`
+  ([data-model](../data-model/data-model-design.md) § Site), with the zone's daylight-saving
+  rules, for diel and phenology views. Stored timestamps stay UTC.
 
 New analyses (soundscape indices, eBird comparison, land cover) are added as new curate tables,
 not core changes (HLD §7).
@@ -50,16 +51,20 @@ not core changes (HLD §7).
 
 | Decision | Chosen | Alternatives Considered | Rationale |
 |---|---|---|---|
-| Weather source | NWS observations API | Meteostat; Open-Meteo reanalysis | The HLD names NWS. It's free, official, and station-based. |
-| Summary time zone | Local analysis time zone for dates; UTC for timestamps | UTC dates | Diel and phenology questions are about local days. |
+| Weather source | NCEI Global Hourly (ISD) for NWS station observations | NWS observations API (`api.weather.gov`); Meteostat; Open-Meteo reanalysis | The HLD names NWS station observations, and NCEI is their official archive. The `api.weather.gov` observations endpoint serves only recent observations, so it can't backfill the months before curate first runs. |
+| Summary time zone | Each site's IANA zone for dates; UTC for timestamps | UTC dates; one project-wide zone | Diel and phenology questions are about local days, and the zone belongs to the site. |
 
 ## Open Questions & Future Decisions
 
 ### Deferred
 1. All CURATE specs, until calibrations exist.
 2. Weekly summary definition (ISO week vs. BirdNET week).
+3. **TODO: verify before curate specs:** how a site's `nws_station_id` (ICAO, e.g. `KXYZ`) maps
+   to its ISD station identifier (USAF-WBAN), and the retention of the `api.weather.gov`
+   observations endpoint.
 
 ## References
 
 - HLD §1.2, §1.3, §3.5, §7
 - NWS API: https://www.weather.gov/documentation/services-web-api
+- NCEI Global Hourly (ISD): https://www.ncei.noaa.gov/products/land-based-station/integrated-surface-database

@@ -52,8 +52,8 @@ reports it safe (below).
 <paths.quarantine>/
   incoming/<label>/               # As copied; <label> is any name the operator chooses
   <retrieval_id>/
-    card/                         # The card contents, moved here from incoming/<label>/
-    manifest.json                 # Paths, sizes, SHA-256 of every file (no audio content)
+    card/part<NN>/                # One ingest part's card contents, moved here from incoming/<label>/
+    manifest-part<NN>.json        # That part's paths, sizes, SHA-256 of every file (no audio content)
   speech-labeling/<audio_file_id>.wav   # Hard links to originals held for speech labeling
 ```
 
@@ -65,11 +65,13 @@ refused.
 
 `urbanbio ingest PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R]`
 
-1. **Hash first.** Walk `PATH`, compute SHA-256 of every file (streamed in 1 MiB blocks), and
-   write `manifest.json`. No parser opens a file before its hash is recorded.
-2. **Register the retrieval.** Allocate the next `retrieval_id` for the deployment, or reuse
-   `--retrieval R` to add files from the same card copied in parts. Move `PATH` to
-   `<retrieval_id>/card/` (a rename on the same filesystem).
+1. **Hash first.** Walk `PATH` and compute SHA-256 of every file (streamed in 1 MiB blocks).
+   No parser opens a file before its hash is recorded.
+2. **Register the retrieval and part.** Allocate the next `retrieval_id` for the deployment as
+   part `01`, or, with `--retrieval R`, add the next part number to an existing retrieval (a
+   card copied in parts). Write `manifest-part<NN>.json` and move `PATH` to
+   `<retrieval_id>/card/part<NN>/` (a rename on the same filesystem). A file whose path and
+   SHA-256 already appear in an earlier part's manifest is recorded as a duplicate and skipped.
 3. **Classify** the card with the deployment's adapter (`list_media`). Unknown files are
    recorded as an `unknown_file` anomaly and left in place.
 4. **Per audio file** (one unit each):
@@ -116,8 +118,9 @@ device records one, the UTC offset.
 - **Offset changes.** Files within one retrieval that report different offsets are kept, and
   each is normalized with its own offset. An `offset_change` anomaly records where the change
   occurred.
-- **Consistency.** When the filename time and the header time disagree by more than 1 second,
-  the file is flagged `timestamp_mismatch`.
+- **Consistency.** Cross-checking a device's independent time sources (for example, filename
+  against header) is the adapter's job, because only the adapter knows which sources exist; it
+  raises `timestamp_mismatch`, which flags the file (see the adapter's LLD).
 - **Clock drift.** `--clock-offset-s X` records the device clock minus a reference clock,
   measured at retrieval (positive means fast). The device clock is assumed correct when last
   synchronized at the previous retrieval or deployment start (`t0`) and off by `X` at this
@@ -191,10 +194,11 @@ time**: only one pipeline command runs at a time
 started after the first finishes. **TODO: measure on the first real card**: the installed
 dependency footprint and uv cache size, which settle the budget.
 
-Peak usage is the card's originals. The archive stage purges each original as soon as its
-masked FLAC is verified ([archive](../../archive/archive-design.md) § Archive Flow), so the
-work directory's FLACs (about 60% of WAV size) grow while the originals shrink, and the total
-never exceeds the card's WAV size. Detect then deletes each FLAC after analyzing it. When a card holds more than
+Peak usage is the card's originals. The archive stage purges originals batch by batch, as soon
+as each batch's archival is recorded in the store
+([archive](../../archive/archive-design.md) § Archive Flow), so the work directory's FLACs
+(about 60% of WAV size) grow while the originals shrink, and the total stays within the card's
+WAV size plus one batch of FLACs. Detect then deletes each FLAC after analyzing it. When a card holds more than
 fits (for example, a missed weekly retrieval), copy `Data/` in date ranges (the filenames start
 with the date) and ingest each part with `--retrieval R`.
 
@@ -206,14 +210,15 @@ current usage, the budget, and the free space.
 
 ## Purge
 
-Purge deletes an original from the quarantine. The archive stage calls it for each file right
-after verification. `urbanbio purge --retrieval R` sweeps up anything left (files archived with
+Purge deletes an original from the quarantine. The archive stage calls it for each batch of
+files right after that batch's ledger rows are written to the store. `urbanbio purge --retrieval R` sweeps up anything left (files archived with
 `--no-purge`, superseded files, device logs, released speech-labeling holds). An original is
 deleted when all of these hold:
 
-1. The archive ledger shows the unit (`audio_file_id`, mask version 1) `succeeded`, which
-   includes the bit-identity and store-write checks
-   ([archive](../../archive/archive-design.md) § Archive Flow).
+1. The archive ledger **in the store** shows the unit (`audio_file_id`, mask version 1)
+   `succeeded`, which includes the bit-identity and store-write checks
+   ([archive](../../archive/archive-design.md) § Archive Flow). A result held only in the running
+   process doesn't count ([runs](../../runs/runs-design.md) § Write Order).
 2. The file isn't held for speech labeling.
 3. The file isn't flagged at any stage.
 
@@ -225,30 +230,36 @@ Two exceptions remove flagged originals:
   the operator's stated `--reason` are recorded in the purge run. Discarded files are never
   written to the store or anywhere else.
 
-Device logs and diagnostics are purged once archived. When only `manifest.json` remains, it is
-written to the retrieval's prefix in the store and the retrieval directory is deleted.
+Device logs and diagnostics are purged once archived. When only the part manifests remain, they
+are written to the retrieval's prefix in the store and the retrieval directory is deleted.
 
 ## Card Wipe Readiness
 
 `urbanbio retrieval status R` reports per-file state and prints **safe to wipe** only when
 both hold:
 
-1. every manifest audio file is archived and verified in the store, superseded by an archived
-   copy, or discarded by the operator;
-2. the store is not on the same filesystem as `paths.quarantine`
+1. every audio file in the retrieval's part manifests is archived and verified in the store,
+   superseded by an archived copy, or discarded by the operator;
+2. every device log, diagnostics file, and unknown file in the part manifests is in the store
+   under the retrieval's prefix, or, when flagged `unexpected_audio`, discarded by the operator
+   (`urbanbio purge --retrieval R --discard PATH`, by manifest path);
+3. the store is not on the same filesystem as `paths.quarantine`
    ([store](../../store/store-design.md) § Same-Filesystem Rule). This always holds on the `s3`
    backend. On the `filesystem` backend, a store on the quarantine's filesystem means wiping the
    card would leave the archive on the same disk as the working copies.
 
-When either fails, it prints the reason instead. Until then, the card is the backup.
+When any of these fails, it prints the reason instead. Until then, the card is the backup.
 
 ## Speech-Labeling Hold
 
 `urbanbio speech sample` ([speech-screen](../../speech-screen/speech-screen-design.md))
 hard-links chosen originals into `quarantine/speech-labeling/` after screening and before
-archive, so the sample is taken before per-file purge. `urbanbio process --speech-sample N` does
-this as part of the pipeline. Purge skips held files. `speech label --import` releases them, and
-the next purge deletes them. A hold older than 30 days is reported by `retrieval status`.
+archive, so the sample is taken before any purge. `urbanbio process --speech-sample N` does
+this as part of the pipeline. Archive skips held files, so speech a labeler finds goes into the
+file's first mask instead of reaching the store. `speech label --import` releases the holds;
+the next `urbanbio archive --retrieval R` archives the released files with any `manual` speech
+events and purges them. Until then, the retrieval isn't safe to wipe. A hold older than 30 days
+is reported by `retrieval status`.
 
 Unknown files on the card (neither audio nor device logs) are archived with the device logs and
 purged with them.
@@ -259,12 +270,14 @@ purged with them.
 |---|---|---|---|
 | Transfer method | Manual `cp` from the card's mount straight into `incoming/` | Dragging in the host's file manager; staging in the host's own folders first; a sync agent; copying the card to the store first | Weekly and manual (Tenet 4). One command that never lands the audio outside the quarantine. Host folders may be synced or backed up, and anything via the store would put unmasked audio outside the quarantine (G3). |
 | Hash timing | Before any parsing | Hash while parsing | HLD §3.1: the checksum fixes identity before anything touches the file. |
-| DST handling | Use the device's recorded offset; never apply zone rules | Convert filename times with `America/New_York` | Devices that keep a fixed offset would be shifted by an hour across the change if zone rules were applied. |
+| DST handling | Use the device's recorded offset; never apply zone rules | Convert filename times with the site's named time zone | Devices that keep a fixed offset would be shifted by an hour across the change if zone rules were applied. |
 | Drift model | Linear between synchronizations, from an operator measurement | Ignore drift; acoustic reference events | Linear is simple and adequate for a crystal clock over a week. Acoustic references are a later refinement. |
 | Disk pressure | A configured budget (default 35 GB) checked at ingest; cards processed one at a time; date-range parts when a card doesn't fit | A fixed limit of one card on disk; a larger disk | A budget adapts to the host and lets both weekly cards be copied in one sitting. Processing one at a time keeps peak memory and disk use to one card's worth. |
 | Purge gate | Archive ledger plus bit-identity check | Store object exists | Existence doesn't prove the archived samples equal the masked original. |
 | Files outside the deployment window | Flag; archive or discard only by operator decision | Archive everything on the card | Pre-deployment test recordings are often made indoors near people (Tenet 1). |
 | Re-copied files | The copy that passes all checks supersedes the other | Keep both; keep the newest | Only one copy of a recording should reach the archive, and "passes the checks" is verifiable where "newest" is not. |
+| Cards copied in parts | Numbered parts, each with its own directory and manifest | One `card/` directory and manifest per retrieval, merged on each part | A merge rewrites a manifest that earlier MediaRetrieval rows and the store's copy already cite. |
+| Held files | Not archived until their labels are imported | Archive with the rest and re-mask after labeling | A miss a labeler finds would otherwise already be in the store (Tenet 1); held originals stay in the quarantine anyway, so waiting costs nothing. |
 
 ## Open Questions & Future Decisions
 

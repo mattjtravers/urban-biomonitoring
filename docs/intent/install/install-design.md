@@ -76,7 +76,7 @@ synthetic audio.
 `scripts/system-packages.txt` holds one Debian package name per line. Blank lines and lines
 starting with `#` are ignored. Versions aren't pinned: each host tracks its release's stable
 packages. The list holds only what the pipeline and the installer need: the audio libraries
-(`ffmpeg`, `libsndfile1`, `sox`) and the installer's tools (`ca-certificates`, `curl`, `git`).
+(`libsndfile1`, read by `soundfile`) and the installer's tools (`ca-certificates`, `curl`, `git`).
 Operator conveniences, such as a terminal multiplexer for long runs, are runbook steps.
 
 ## `scripts/install.sh`

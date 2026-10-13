@@ -53,16 +53,17 @@ so every detector gets the same treatment.
 | Python | 3.13 (the newest version with LiteRT wheels) |
 | `model_id` | `birdnet-acoustic-2.4-fp32` |
 
-Prediction settings (config `[detect]`):
+Prediction settings. Each configurable value is a key in `[detect]` of `config/pipeline.toml`
+and so part of the stage's `params_hash`:
 
-| Parameter | Value | Note |
-|---|---|---|
-| `default_confidence_threshold` | 0.10 | The stored floor (T2) |
-| `top_k` | `None` | Every class above the floor, not just the top 5 |
-| `overlap_duration_s` | 0.0 | Contiguous 3 s windows: 20 per 1-minute file |
-| `sigmoid_sensitivity` | 1.0 | Model default; calibration works on these scores |
-| `bandpass_fmin`, `bandpass_fmax` | 0, 15,000 Hz | Model defaults |
-| `custom_species_list` | `None` | The geo filter is applied as a flag, below |
+| Config key | Library parameter | Value | Note |
+|---|---|---|---|
+| `confidence_floor` | `default_confidence_threshold` | 0.10 | The stored floor (T2) |
+| `top_k` | `top_k` | `"none"` (library `None`) | Every class above the floor, not just the top 5 |
+| `overlap_s` | `overlap_duration_s` | 0.0 | Contiguous 3 s windows: 20 per 1-minute file |
+| `sigmoid_sensitivity` | `sigmoid_sensitivity` | 1.0 | Model default; calibration works on these scores |
+| `bandpass_fmin_hz`, `bandpass_fmax_hz` | `bandpass_fmin`, `bandpass_fmax` | 0, 15,000 Hz | Model defaults |
+| — | `custom_species_list` | `None` (fixed) | The geo filter is applied as a flag, below |
 
 Results come back as an Arrow table (`input`, `start_time`, `end_time`, `species_name`,
 `confidence`, with model metadata in the schema). The stage maps it to `Detection` rows.
@@ -97,26 +98,29 @@ the acoustic model.
 
 `urbanbio detect --retrieval R` or `--all-pending`:
 
-1. Units: every file whose current mask version is archived and whose detect idempotency key
+1. Units: every (file, current mask version, `model_id`) whose detect idempotency key
    (inputs = `masked_sha256`; models = acoustic and geo model file hashes; params) has no
    ledger row ([runs](../runs/runs-design.md)).
-2. For each batch (one UTC day of one deployment): use the work-directory FLAC left by archive
+2. For each batch of up to 50 units ([runs](../runs/runs-design.md) § Write Order), taken in
+   order of deployment and file start: use the work-directory FLAC left by archive
    if its SHA-256 matches `masked_sha256`; otherwise fetch it from the store to the work directory
    with `store.get`, which verifies it. Then call `detect` with the batch's file paths and `n_workers` set to
    `resources.workers` ([runs](../runs/runs-design.md) § Resource Limits). The library's
    workers each hold one loaded model and read one file at a time, so memory doesn't grow
    with the batch.
 3. Attach `detection_id`, `start_utc`, `site_id`, `deployment_id`, `mask_version`,
-   `in_geo_list`, and `overlaps_mask` (the window intersects any current mask interval).
-4. Write one `detections` part file per run × retrieval, partitioned by `model_id`, `site_id`,
-   and `year_month`. Flush the ledger. Delete work-directory FLACs for that batch.
+   `in_geo_list`, and `overlaps_mask_at_detect` (the window intersects a masked interval of the
+   mask version analyzed).
+4. Write the batch's `detections` part files (partitioned by `model_id`, `site_id`, and
+   `year_month`), then its ledger part, then delete the batch's work-directory FLACs
+   ([runs](../runs/runs-design.md) § Write Order).
 
 A file whose checksum doesn't match `masked_sha256` is flagged (Tenet 3). A file that fails to
 decode, or a model error, marks the unit `failed`, and the next run retries it.
 
 **Volume.** At a 0.10 floor with `top_k = None`, a 3 s window yields a few classes on average.
-The expected order is 10⁴ rows per recorder-day and tens of MB of Parquet per year, small for
-DuckDB.
+The expected order is 10⁴ rows per recorder-day, so about 10⁷ rows and on the order of 100 MB
+of Parquet a year for two recorders, small for DuckDB.
 
 **Compute.** The library's published benchmark is 50× real time on a 4-core Intel i7 (8th
 generation). With the default 2 workers on a host of similar speed, a week of two recorders
@@ -129,8 +133,13 @@ wall-clock time and peak memory.
   BirdNET V3.0 through the same library) is a new `model_id`. It writes its own partition, and
   earlier partitions are untouched.
 - Re-running the same model after a parameter change produces new detections under a new
-  `run_id` in the same `model_id` partition. Queries choose a run explicitly or take the
-  latest succeeded run per `model_id`.
+  `run_id` in the same `model_id` partition. A re-mask makes each affected file a new unit
+  (its new mask version), so detect re-runs it.
+- **Current detections** are chosen per unit, not per run: for each file and `model_id`, the
+  rows of the latest run that succeeded on the file's current mask version
+  ([runs](../runs/runs-design.md) § Current Rows). The `detections_current` view applies this
+  and adds `overlaps_current_mask` ([data-model](../data-model/data-model-design.md)
+  § Detection). Queries that need an older run select it by `run_id`.
 - Reprocessing older audio reads Glacier IR objects directly (no restore). Cost and pacing
   are covered in [archive](../archive/archive-design.md) § Cost.
 

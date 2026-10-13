@@ -31,7 +31,7 @@ A **unit** is the smallest piece of work a stage can skip or redo:
 | speech-label | one held audio file | `audio_file_id` |
 | archive | one mask version of an audio file | `audio_file_id` + `mask_version` (1 at first archive) |
 | purge | one audio file | `audio_file_id` |
-| detect | one archived audio file | `audio_file_id` + `mask_version` |
+| detect | one archived audio file under one model | `audio_file_id` + `mask_version` + `model_id` |
 | rescreen | one archived audio file | `audio_file_id` + `mask_version` |
 | admin | one deployment change | `deployment_id` |
 
@@ -85,6 +85,48 @@ The two non-success statuses mean different things:
   `outside_deployment`, `timestamp_mismatch`, `archive_conflict`, …). The unit is not retried
   until the operator waives the check (Tenet 3).
 
+## Write Order
+
+A stage persists a unit's results in a fixed order, so a crash at any point leaves the store
+consistent and the next run repairs it:
+
+1. **Outputs.** The unit's store objects (archived FLACs, sidecars, clips) and its table rows
+   are written. Table rows are written as part files per run × batch (below).
+2. **Ledger.** The ledger rows for the same batch are written, after every output they cite.
+3. **Local cleanup.** Only then does the stage take a destructive local action that depends on
+   the unit: purging an original from the quarantine, or deleting a work-directory FLAC.
+
+The main process works in **batches** of at most `RUN_BATCH_UNITS` (50) units. When a batch's
+units are finished, it writes the batch's table part files
+`curated/<table>/<partitions>/<run_id>-<batch>.parquet` (one per table and partition the batch
+touches), then the ledger part file
+`curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`, then performs the batch's local
+cleanup. The run log is uploaded at the same point (`runs/<run_id>.log`, rewritten each batch).
+
+If a run crashes:
+
+- before a batch's ledger part is written, that batch's table part files are **orphans**: the
+  ledger doesn't cite them, every reader ignores them (§ Current Rows), and the next run
+  repeats the batch's units under its own `run_id`;
+- after the ledger part is written but before local cleanup, the next run finds the units
+  `succeeded` and only repeats the cleanup (purge and work-directory sweeps are idempotent).
+
+So no original is ever purged, and no work FLAC deleted, before the store records the outputs
+that justify it, and a crash never yields duplicate rows that readers count.
+
+## Current Rows
+
+A table row produced by a stage counts only when the ledger records its unit as `succeeded`
+under the same `run_id`. When a unit has succeeded more than once (for example, after a
+parameter change), the row set from the latest such run (by `finished_utc`) is the **current**
+one. Every reader (views, curate, validate, publish) reads stage outputs through this rule, which
+`urbanbio.storage.tables` implements as one view per table (e.g. `detections_current`,
+`speech_events_current`); see [data-model](../data-model/data-model-design.md) § Parquet Tables.
+
+Run status doesn't enter the rule. A run that ends `partial` because some units were flagged
+still produces current rows for every unit that succeeded; a run that crashed (`running`
+forever) does too, for every batch whose ledger part was written.
+
 ## Lookups
 
 Two lookups read the ledger:
@@ -111,11 +153,6 @@ Waivers are for checks whose condition the operator has confirmed is acceptable 
 a recording genuinely cut short by battery failure). Privacy checks can't be waived:
 `PrivacyError` is never a unit-level flag
 ([config-cli](../config-cli/config-cli-design.md) § Errors).
-
-The ledger is flushed to the store in batches (every 50 units and at the end of the run) as
-immutable part files `curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`. If a run
-crashes, the units completed before the last flush stay recorded, and the next run repeats at
-most one batch.
 
 ## Run Record
 
@@ -213,6 +250,9 @@ The software's part is to make every interruption safe:
 | What invalidates a unit | `stage_version`, params, inputs, models | git commit | Keying on the commit would reprocess the archive after every refactor, at real egress cost. A deliberate `stage_version` bump makes reprocessing a visible decision. |
 | Run IDs | Time-based with random suffix | Deterministic from the idempotency key | A run is an execution event; two executions are two runs even when one skips everything. Determinism lives in unit keys. |
 | Ledger write pattern | Batched immutable part files | One row per unit as separate objects; rewriting one file | Per-unit objects multiply request costs. Rewriting a shared file risks losing it on a crash. |
+| Persist order | Outputs, then ledger, then local cleanup, per batch | Purge each original as soon as its write is confirmed; ledger at end of run | Purging before the ledger is in the store can delete an original whose archival the store can't show, leaving a retrieval that can never be confirmed safe to wipe. |
+| Duplicate rows after a crash | Rows count only when cited by a succeeded ledger row | Deterministic, run-independent file names that a retry overwrites | Run IDs are per execution, so names can't repeat across a retry without overwriting objects; ledger citation needs no overwrite and also covers a crash between output and ledger writes. |
+| Which rows are current | Latest succeeded run per unit | Latest succeeded run per stage or model | Runs cover one retrieval or a pending set, so a per-run choice would select only part of the data; partial runs are normal when any unit is flagged. |
 | Flagged units | Stay skipped until explicitly cleared | Retry automatically on the next run | Tenet 3: a unit that failed verification needs a human decision, not silent retries. |
 | Memory bounding | Configured worker count with a conservative default, one file per worker | Workers equal to the detected CPU count; a memory-aware scheduler | On a small host without swap, one worker per core can exhaust memory and get the run killed. A scheduler is complex for one host. A configured count is predictable and follows Tenet 5. |
 

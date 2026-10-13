@@ -28,7 +28,10 @@ writes only through the store interface and builds keys only with `urbanbio.stor
 
 ## Archive Flow (per audio file)
 
-`urbanbio archive --retrieval R` processes each screened file:
+`urbanbio archive --retrieval R` processes each screened file that isn't held for speech
+labeling ([intake](../ingest/intake/intake-design.md) § Speech-Labeling Hold). A held file's unit
+isn't attempted, so it gets no ledger row; it is archived by the first `archive` run after its
+labels are imported, with any `manual` speech events in its first mask.
 
 1. **Re-verify the original.** Read the original from the quarantine and confirm its SHA-256
    still equals `original_sha256`.
@@ -57,19 +60,25 @@ writes only through the store interface and builds keys only with `urbanbio.stor
    object's length and full SHA-256 ([store](../store/store-design.md) § Store Interface), so a
    returned `put` is the proof that the archived bytes are the verified FLAC.
 8. **Record** an AudioMaskVersion row and a `succeeded` ledger unit (unit ID
-   `audio_file_id` + mask version). Only this row allows purge
+   `audio_file_id` + mask version). When the batch is complete, its `audio_mask_versions` part
+   file and then its ledger part file are written to the store
+   ([runs](../runs/runs-design.md) § Write Order). Only the ledger row in the store allows purge
    ([intake](../ingest/intake/intake-design.md) § Purge).
-9. **Purge** the original from the quarantine through intake's purge, unless the file is held
-   for speech labeling or the run has `--no-purge`. Purging per file keeps the work directory's
-   FLACs and the remaining originals within one card's size on disk.
+9. **Purge** the batch's originals from the quarantine through intake's purge, after the ledger
+   part is written, unless the run has `--no-purge`. Purging per batch keeps the work directory's
+   FLACs and the remaining originals within about one card's size on disk.
 
 Any failed check raises `IntegrityError`. The unit is flagged, nothing is purged, and the
 original stays in the quarantine.
 
 A worker ([runs](../runs/runs-design.md) § Resource Limits) is one process that takes one file
 through steps 1–7 at a time. `resources.workers` workers run in parallel. The main process
-records each result (step 8) and purges (step 9), so ledger writes and purges happen in one
-place.
+records each result and writes each batch (step 8) and purges (step 9), so ledger writes and
+purges happen in one place, in that order.
+
+If a run crashes after step 7 but before its batch's ledger part is written, the original is
+still in the quarantine; the next run repeats the unit, and step 6 finds the identical object
+already written.
 
 The work-directory FLAC is kept until the detect stage has processed that file, so detect
 needn't download it. Detect then deletes it.
@@ -117,7 +126,15 @@ mask version:
 - The new FLAC (built by `remask`, see
   [speech-screen](../speech-screen/speech-screen-design.md) § Re-screening and Re-masking) goes
   through steps 3–8 with `mask_version + 1` and is written with `overwrite=True` to the same
-  key. The sidecar is unchanged, and there's no original to purge.
+  key, which the store accepts only because the mask version is higher
+  ([store](../store/store-design.md) § Store Interface). The sidecar is unchanged, and there's
+  no original to purge.
+- **Clips are withdrawn.** Every object under `clips/` cut from this file whose window
+  (including its context) overlaps an interval the new mask adds is deleted, whether it was
+  cut for review or published. Clips cut from earlier mask versions can hold the speech the new
+  mask removes, so they get the same treatment as the earlier FLAC. Their detections stay
+  reviewable only through a clip cut again from the new version, and
+  [publish](../publish/publish-design.md) omits withdrawn clips from the next release.
 - The previous masked version contains speech the new mask removes, so the store keeps no copy
   of it (Tenet 1). On `s3`, bucket versioning is disabled; on `filesystem`, the new file
   replaces the old one by rename ([store](../store/store-design.md)). Copies outside the store's
@@ -154,23 +171,23 @@ USD 0.02 per 1,000 objects; data transfer out to the internet USD 0.09/GB after 
 100 GB/month (AWS free tier). A processing host outside AWS downloads from the archive as
 internet transfer out. Uploads into AWS S3 are free.
 
-**Volume model** (sized for 3 recorders; parameters in config): 48 kHz, 16-bit mono WAV at
-288 recorded minutes per day is 1.66 GB per recorder-day. Assuming FLAC reaches 60% of WAV
-size on outdoor ambient audio (**TODO: measure on the first real card**), that's about
-1.0 GB per recorder-day: 3 GB/day, 90 GB/month, about 1.1 TB/year for 3 recorders, in about
-315,000 audio objects a year.
+**Volume model** (sized for 2 recorders; costs scale linearly per recorder; parameters in
+config): 48 kHz, 16-bit mono WAV at 288 recorded minutes per day is 1.66 GB per recorder-day.
+Assuming FLAC reaches 60% of WAV size on outdoor ambient audio (**TODO: measure on the first
+real card**), that's about 1.0 GB per recorder-day: 2 GB/day, 60 GB/month, about 730 GB/year
+for 2 recorders, in about 210,000 audio objects a year.
 
-| Monthly storage cost at 1.1 TB (end of year 1) | USD |
+| Monthly storage cost at 730 GB (end of year 1) | USD |
 |---|---|
-| All S3 Standard | 25.0 |
-| 30 days in Standard, then Glacier IR | 2.1 + 4.0 = 6.1 |
-| 30 days in Standard, then Deep Archive | 2.1 + 1.0 = 3.1 |
+| All S3 Standard | 16.8 |
+| 30 days in Standard, then Glacier IR | 1.4 + 2.7 = 4.1 |
+| 30 days in Standard, then Deep Archive | 1.4 + 0.7 = 2.1 |
 
-Year-1 total for the chosen policy is about USD 60 (storage about 49, PUTs and transitions
-about 10). Year 2 is about USD 110.
+Year-1 total for the chosen policy is about USD 40 (storage about 33, PUTs and transitions
+about 6). Year 2 is about USD 75.
 
-**Reprocessing a year of audio** (1.1 TB): from Glacier IR, about USD 33 retrieval + USD 89
-transfer out. From Deep Archive, about USD 11 restore + USD 89 transfer out, plus restore
+**Reprocessing a year of audio** (730 GB): from Glacier IR, about USD 22 retrieval + USD 57
+transfer out. From Deep Archive, about USD 2 bulk restore + USD 57 transfer out, plus restore
 orchestration and up to 48 h of waiting. Transfer out dominates either way. Spreading a
 non-urgent reprocessing over months keeps each month within the 100 GB free allowance.
 
@@ -206,6 +223,7 @@ passes about 5 TB.
 | Zones | One store, prefixes per zone | Separate stores or buckets per zone | One marker, one policy, one lifecycle, one budget. The IAM policy scopes by prefix anyway. |
 | Public material | GitHub Pages only | A public store prefix | Keeps "nothing in the store is public" absolute and avoids public egress charges. |
 | Archive tier (T1) | Glacier IR after 30 days | Standard-IA; Glacier Flexible Retrieval; Deep Archive | See T1 resolution. |
+| Clips after a re-mask | Delete every clip overlapping the added mask, review or published | Withdraw only published clips | A review clip from an earlier mask version holds the speech the re-mask removes; keeping it would undo the re-mask (Tenet 1, HLD §5.1). |
 
 ## Open Questions & Future Decisions
 

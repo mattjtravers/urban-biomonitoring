@@ -21,8 +21,11 @@ Four principles drive it:
   backend has confirmed the object's full SHA-256 in the store. The archive purges unmasked
   originals on the strength of that confirmation ([archive](../archive/archive-design.md)
   § Archive Flow).
-- **The pipeline can't destroy the archive.** Deletes are allowed only under `clips/`, enforced
-  in the interface on every backend and, on `s3`, also by IAM.
+- **The pipeline doesn't delete or rewrite the archive.** Deletes are allowed only under
+  `clips/`, enforced in the interface on every backend and, on `s3`, also by IAM. Overwrites are
+  allowed only for a re-mask (a higher mask version) under `archive/` and for run records under
+  `runs/`, enforced in the interface. IAM can't express the mask-version rule, so the pipeline
+  key itself can overwrite archive objects (see § IAM: pipeline principal).
 - **Refuse rather than write to the wrong place.** Every command that touches the store first
   reads the store marker and refuses to run when it is missing or belongs to another profile
   (HLD Tenet 3).
@@ -40,6 +43,7 @@ The backend is chosen by the `[store]` table of the profile's configuration: the
 [store]
 backend = "s3"                     # "s3" | "filesystem"
 region = "us-east-1"               # s3 only
+glacier_transition_days = 30       # s3 only; must equal the bucket's lifecycle rule
 # root = "/mnt/lab-share/urbanbio" # filesystem only; set in the operator config file
 ```
 
@@ -47,6 +51,7 @@ region = "us-east-1"               # s3 only
 |---|---|---|---|
 | `backend` | both | `s3` in `processing`, `filesystem` in `dev` | Any other value is a `ConfigError` |
 | `region` | `s3` | `us-east-1` | AWS region of the bucket |
+| `glacier_transition_days` | `s3` | `30` | Age at which the bucket's lifecycle rule moves archived audio to Glacier IR (T1). Used only by the `audio_file_tier` view; it doesn't configure the bucket, so it must match the rule set up in § Bucket configuration. Not a stage parameter, so it isn't part of any idempotency key. |
 | `root` | `filesystem` | none in `processing`; `~/urbanbio-dev/store` in `dev` | Expanded and resolved; must lie outside the repository working tree |
 
 A key that belongs to the other backend is a `ConfigError`, so a configuration can't look as if
@@ -86,6 +91,14 @@ Contract, on every backend:
   `IntegrityError` (`store_checksum_mismatch`). When an object already exists at `key` and
   `overwrite` is false, it raises `StorageError` (`store_object_exists`) without writing. Only
   a complete, verified object counts as existing; a partial write left by a crash does not.
+  `overwrite=True` is accepted only:
+  - under `runs/`, for rewriting a run record and its log;
+  - under `archive/`, when the existing object's `mask-version` metadata is lower than the new
+    one's. The backend reads the existing object with `head` and replaces it only if it is
+    unchanged since that read.
+
+  Any other `overwrite=True` raises `StorageError` (`store_overwrite_forbidden`) before
+  writing.
   Metadata keys and values are ASCII, keys lowercase with hyphens, at most 2 KB in total.
 - **`head`** returns the object's length, SHA-256, and metadata, or `None` when no object
   exists.
@@ -112,7 +125,7 @@ same on every backend: `s3://<bucket>/<key>` on `s3`, `<root>/<key>` on `filesys
 .urbanbio-store.json
 archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.flac
 archive/site=<site_id>/deployment=<deployment_id>/date=<YYYY-MM-DD>/<audio_file_id>.header.json
-retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/manifest.json
+retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/manifest-part<NN>.json
 retrievals/site=<site_id>/deployment=<deployment_id>/<retrieval_id>/device/<original filename>
 curated/<table>/<partitions>/<file>.parquet
 clips/<detection_id>.flac
@@ -121,8 +134,9 @@ runs/<run_id>.log
 ```
 
 `date` is the UTC date of the file start. Filenames are opaque IDs, so recorder names don't
-appear in archive keys. A device file's original filename is sanitized to the key alphabet;
-the original name is kept in the retrieval manifest.
+appear in archive keys. `<NN>` is the two-digit ingest part number
+([intake](../ingest/intake/intake-design.md) § Ingest Flow). A device file's original filename is
+sanitized to the key alphabet; the original name is kept in the part's manifest.
 
 ## Store Marker
 
@@ -167,7 +181,7 @@ credentials or config files (HLD §8). Retries use botocore's `standard` mode wi
 
 | Operation | AWS S3 call |
 |---|---|
-| `put` | `PutObject` with `ChecksumAlgorithm = SHA256`, the precomputed `ChecksumSHA256`, and the metadata; then `HeadObject(ChecksumMode="ENABLED")`, requiring the returned checksum and length to match. With `overwrite=False`, the PUT carries `If-None-Match: *`, so an existing object fails the write (`store_object_exists`). Every object is a single PUT; objects are well under the 5 GB single-PUT limit. |
+| `put` | `PutObject` with `ChecksumAlgorithm = SHA256`, the precomputed `ChecksumSHA256`, and the metadata; then `HeadObject(ChecksumMode="ENABLED")`, requiring the returned checksum and length to match. With `overwrite=False`, the PUT carries `If-None-Match: *`, so an existing object fails the write (`store_object_exists`). An allowed overwrite carries `If-Match` with the ETag from the preceding `head`, so a change between the check and the write fails it. Every object is a single PUT; objects are well under the 5 GB single-PUT limit. |
 | `head` | `HeadObject(ChecksumMode="ENABLED")`; 404 gives `None` |
 | `get` | `GetObject`, streamed to `dest` with `ChecksumMode="ENABLED"` |
 | `list` | `ListObjectsV2` paginated |
@@ -218,7 +232,7 @@ Set up once by the operator with an administrator identity (HLD Tenet 4). The co
    savings.
 
 8. **AWS Budgets:** a monthly cost budget sized from [archive](../archive/archive-design.md)
-   § Cost (USD 15 for the three-recorder volume model) with email alerts at 50%, 80%, and 100%
+   § Cost (USD 10 for the two-recorder volume model; add about USD 5 per further recorder) with email alerts at 50%, 80%, and 100%
    of actual spend and 100% of forecast spend. The email address is entered in AWS only, never
    in the repository. Budgets without actions are free.
 9. `urbanbio store init` with the pipeline key, to write the marker.
@@ -268,6 +282,13 @@ lifecycle, or policy, and has no access to other AWS services. `HeadObject` is a
 `s3:GetObject`. Re-masking overwrites with `s3:PutObject`. Deleting anything outside `clips/`
 needs the administrator identity.
 
+`s3:PutObject` on `archive/*` also lets the key overwrite archived audio. The interface allows
+that only for a higher mask version, but a leaked key or code that bypasses the interface could
+replace archive objects, and with versioning disabled (Tenet 1) the earlier object can't be
+recovered from the store. That is an accepted risk: the key is scoped to this bucket, kept only
+in the environment, and rotated on the operator's schedule, and a card stays the backup until
+its retrieval is safe to wipe.
+
 ## `filesystem` Backend
 
 The store root is `[store] root`, a directory on any mounted filesystem: a lab NFS or SMB
@@ -305,9 +326,10 @@ every call; archive objects are a few MB, so the cost is small next to encoding.
 `put` to the same key.
 
 **Direct reads by DuckDB.** `table_glob` lets DuckDB read Parquet files directly, without
-`head`. Table files have deterministic names per run and unit
-([data-model](../data-model/data-model-design.md) § Parquet Tables), so an uncommitted table file left
-by a crash is the same file the re-run rewrites, and no row is counted twice.
+`head`, so DuckDB can see a table file that is uncommitted (renamed into place, metadata not yet
+renamed). Its content is complete, because the object is renamed only after it is fully written
+and fsynced. Rows in it count only if a succeeded ledger row cites its run
+([runs](../runs/runs-design.md) § Current Rows); a part file left by a crashed batch is ignored.
 
 **What the read-back proves.** The read-back confirms what the filesystem returns for the final
 file. On a filesystem that caches writes locally before sending them on (some FUSE mounts and
@@ -358,6 +380,7 @@ other's work.
 | `s3` credential type | Long-lived IAM user key scoped to the pipeline's prefixes | IAM Identity Center or OIDC short-lived credentials | Short-lived credentials need an identity provider and a sign-in step in every session. A narrowly scoped key that can't delete the archive is the simplest workable option for a small deployment; how often it's rotated is the operator's call, documented in runbooks. |
 | `s3` write checksum | SHA-256 additional checksum on single PUTs | MD5 `Content-MD5`; CRC64NVME multipart | SHA-256 is the project's identity hash, so one value serves provenance and transport integrity. Single PUTs keep it a full-object checksum. |
 | `s3` existing-object guard | Conditional PUT (`If-None-Match: *`) | `HeadObject` then PUT | One request, and no race between the check and the write. |
+| Overwrite scope | Interface allows overwrite only for run records and higher archive mask versions; `If-Match` on `s3` | Any key with `overwrite=True`; S3 Object Lock or versioning on `archive/` | An unrestricted overwrite flag can destroy archived audio through a bug. Object Lock and versioning would keep the earlier, less-masked version, which Tenet 1 forbids. |
 | `filesystem` metadata | JSON file in a `.meta/` directory beside the object | Extended attributes; one metadata database per store | Extended attributes aren't preserved by many NFS/SMB setups and copy tools. A database file is a single point of corruption and needs locking on a shared filesystem. |
 | `filesystem` write | Temporary file, fsync, rename, read-back | Write in place; copy then compare | Rename makes the object appear whole or not at all, so a crash never leaves a truncated object at a real key. |
 | `filesystem` commit point | Metadata renamed after the object; `head` hashes the object | Metadata first (the object's existence as commit); `head` compares lengths only | With metadata first, a crash during a re-mask leaves new metadata beside the old object, and equal lengths would hide it. Renaming metadata last and hashing in `head` makes every crash state either committed-and-correct or visibly uncommitted, and a re-run repairs it. |

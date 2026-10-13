@@ -87,7 +87,7 @@ per unit attempt:
 | `idempotency_key` | `str` | no | |
 | `run_id` | `str` | no | |
 | `status` | `Literal["succeeded", "flagged", "failed"]` | no | |
-| `reason_code` | `str` | yes | For `flagged` and `failed` |
+| `reason_code` | `str` | yes | For `flagged` and `failed`; on a `succeeded` row only as `discarded`, for a `purge` unit that deleted a flagged file by operator decision |
 | `waived_reason_codes` | `list[str]` | no | Checks waived for this attempt; usually empty |
 | `related_unit_id` | `str` | yes | E.g. the superseding file for `superseded` |
 | `output_refs` | `list[str]` | no | Store keys or table/file references |
@@ -157,7 +157,7 @@ still produces current rows for every unit that succeeded; a run that crashed (`
 forever) does too, for every batch whose ledger part was written.
 
 **Run-level tables.** A few tables hold rows about a run or a retrieval rather than about one
-unit: `media_retrievals`, `retrieval_anomalies`, `geo_species_lists`, `sites`, and `runs`, and
+unit: `media_retrievals`, `retrieval_anomalies`, `device_file_discards`, `geo_species_lists`, `sites`, and `runs`, and
 the `deployments` rows an `ingest` run writes (a filled-in `firmware_version` or a set
 `timestamp_issues`). Each is written once, when the
 run ends. Its rows count when the run's record has ended (any status other than `running`). A
@@ -190,7 +190,10 @@ covers exactly one reason code for one unit. When a stage re-runs that unit, a c
 raise the waived code records it as a warning and continues, and the unit's ledger row carries
 `waived_reason_codes`. Any other failing check still flags the unit. Waivers are keyed by unit
 and reason code, not by idempotency key, so they keep applying after stage-version or parameter
-changes. They are never removed.
+changes. They are never removed. A waiver doesn't re-run anything itself: the operator
+re-runs the command that flagged the unit (for an ingest flag, the same `ingest` or `process`
+command, which resumes the part by its label;
+[intake](../ingest/intake/intake-design.md) § Ingest Flow), and the lookup then runs the unit.
 
 Waivers are for checks whose condition the operator has confirmed is acceptable (for example,
 a recording genuinely cut short by battery failure). Privacy checks can't be waived:
@@ -252,7 +255,8 @@ whose key is listed in `PRIVATE_KEYS` (`latitude_exact`, `longitude_exact`, `add
 ## Concurrency
 
 Only one pipeline command that writes runs at a time. Commands that create runs take an
-exclusive lock file `<paths.state>/urbanbio.lock` holding the PID and `run_id`. A second
+exclusive lock file `<paths.state>/urbanbio.lock` holding the PID and the current `run_id`
+(`process` rewrites it as each stage's run starts). A second
 command exits with an error naming the holder. A stale lock (PID not alive) is reported and
 removed only with `--force-unlock`.
 

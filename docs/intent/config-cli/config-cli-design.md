@@ -344,7 +344,7 @@ Typer application `urbanbio`, installed as a console script.
 | `urbanbio archive --retrieval R [--no-purge]` | Mask, encode FLAC, write to the store, verify; purge verified originals unless `--no-purge`. Files held for speech labeling are skipped until their labels are imported | `archive` |
 | `urbanbio detect --retrieval R \| --all-pending` | Run BirdNET on archived audio | `detect` |
 | `urbanbio purge --retrieval R [--discard UNIT\|PATH … --reason TEXT]` | Delete verified (or superseded) originals from the quarantine; discard named flagged audio files (by unit) or `unexpected_audio` device files (by manifest path) without archiving | `purge` |
-| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect`. A stage whose run ends `partial` passes its succeeded files on; a stage whose run ends `failed` stops `process` before the next stage, and `process` exits with that run's code | one run per stage |
+| `urbanbio process PATH --deployment D --retrieved T [--clock-offset-s X] [--retrieval R] [--speech-sample N]` | `ingest → screen → [speech sample] → archive (purging originals once recorded as archived; held files skipped) → detect`. A stage whose run ends `partial` passes its succeeded files on; a stage whose run ends `failed` stops `process` before the next stage. `process` exits with the worst result of its stage runs: that failed run's code, else `2` if any stage ended `partial`, else `0`. Files held for speech labeling aren't units, so they don't make a run partial | one run per stage |
 | `urbanbio retrieval status R` | Per-file status; tells whether the card can be wiped; lists files archived but not yet detected and work-directory FLACs still on disk | — |
 | `urbanbio speech sample --retrieval R --n N` | Hold a stratified sample in quarantine for speech labeling | `speech-sample` |
 | `urbanbio speech label --import` | Import labels for held samples from `labels.csv` and release the holds; the next `archive --retrieval R` archives the released files | `speech-label` |
@@ -359,7 +359,9 @@ only those whose results a clean run can replace accept it
 ([runs](../runs/runs-design.md) § Run Record).
 
 Exit codes: `0` success; `1` run failed; `2` run partial (some units flagged or failed);
-`3` configuration error (including the store marker); `4` lock held.
+`3` configuration error (including the store marker); `4` lock held. A `ConfigError` exits `3`
+whether it is raised before a run starts or during one; a run it stops is recorded `failed`.
+Exit `1` is for runs stopped by any other run-level error.
 
 ## Errors
 

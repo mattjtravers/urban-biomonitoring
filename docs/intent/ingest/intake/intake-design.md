@@ -266,13 +266,15 @@ These exceptions remove flagged originals:
 
 - A file flagged `superseded` is deleted once the file that supersedes it has been archived.
 - `urbanbio purge --retrieval R --discard UNIT [--discard UNIT …]` deletes named flagged files
-  without archiving them (for example, `outside_deployment` test recordings). The discard and
-  the operator's stated `--reason` are recorded in the purge run. Discarded files are never
+  without archiving them (for example, `outside_deployment` test recordings). Each discard is a
+  `succeeded` purge unit with `reason_code` `discarded`, and the operator's stated `--reason`
+  is recorded in the purge run. Discarded files are never
   written to the store or anywhere else.
 - `--discard PATH` does the same for a device file recorded in an `unexpected_audio` anomaly
   ([archive](../../archive/archive-design.md) § Archive Flow, Device files), named by its
-  manifest path. Device files aren't ledger units, so the purge run record lists each discarded
-  path with the operator's reason.
+  manifest path. Device files aren't ledger units, so each discard is a row in the run-level
+  `device_file_discards` table ([data-model](../../data-model/data-model-design.md) § Parquet
+  Tables) with the operator's reason.
 
 Device logs and diagnostics are purged once they are in the store. When only the part manifests
 remain (already in the store since registration), the retrieval directory is deleted.
@@ -287,7 +289,10 @@ all of these hold:
 2. every device log, diagnostics file, and unknown file in the part manifests is in the store
    under the retrieval's prefix, or, when recorded in an `unexpected_audio` anomaly, discarded by
    the operator (`urbanbio purge --retrieval R --discard PATH`, by manifest path);
-3. the store is not on the same filesystem as `paths.quarantine`
+3. no audio file's current `archive` success came from a run with uncommitted code. A clean run
+   may still replace that archived object or conflict with it, so until then the card stays the
+   backup;
+4. the store is not on the same filesystem as `paths.quarantine`
    ([store](../../store/store-design.md) § Same-Filesystem Rule). This always holds on the `s3`
    backend. On the `filesystem` backend, a store on the quarantine's filesystem means wiping the
    card would leave the archive on the same disk as the working copies.

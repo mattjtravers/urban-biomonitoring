@@ -21,10 +21,13 @@ Package: `urbanbio.screen`.
 ## Detectors
 
 `urbanbio screen --retrieval R` screens each audio file of the retrieval whose current
-`ingest` unit succeeded and that isn't yet archived. A file flagged at ingest (for example
-`outside_deployment`) isn't screened, so it can't be archived until the operator waives the
-flag or discards it. An archived file is screened again only through `rescreen`, so the
-archived mask and the current speech events never diverge.
+`ingest` unit succeeded and that has no `archive` success from a clean run (`git_dirty:
+false`). A file flagged at ingest (for example `outside_deployment`) isn't screened, so it can't
+be archived until the operator waives the flag or discards it. A file archived by a clean run
+is screened again only through `rescreen`, so the archived mask and the current speech events
+never diverge. A file archived only by a dirty run is still screened by the next clean run
+([runs](../runs/runs-design.md) § Run Record); if the clean events change the mask, the clean
+archive finds a different version 1 in the store and flags `archive_conflict`.
 
 Both detectors run on every screened file. A segment is flagged if **either** fires (HLD §3.2).
 
@@ -155,8 +158,12 @@ with nothing written, so a half-imported sample can't release some holds and not
 saved outside the quarantine.
 
 **Metrics** (`urbanbio speech recall`), per stratum and weighted to the population with
-stratum sizes. Recall measures the detectors, so it is computed against the **detector mask**:
-the padded union of the file's `birdnet-human` and `silero-vad` events only. `manual` events
+stratum sizes, and reported separately for each screen `params_hash`. Recall measures the
+detectors, so it is computed against the **detector mask**: the padded union of the
+`birdnet-human` and `silero-vad` events from the file's `screen` unit only, which ran on the
+original audio. Events from `rescreen` are excluded: re-screening runs on masked audio, where
+every labeled interval is already zeroed, so it can't show whether new thresholds would have
+caught it. `manual` events
 from labeling are excluded, even though they are part of the archived mask, because counting
 them would score every miss a labeler found as caught.
 
@@ -171,7 +178,8 @@ them would score every miss a labeler found as caught.
 
 **Target:** event recall ≥ 0.98, judged on the lower bound of the 95% interval, after the first
 four retrievals. Below target, thresholds and padding are retuned (HLD T5) and affected
-archives are re-screened.
+archives are re-screened. The retuned values are evaluated by labeling a new sample from a
+retrieval screened with them, not by re-screening labeled files.
 
 **Misses.** A labeled speech interval that isn't wholly inside the detector mask means the
 screen missed at least part of it. Import turns the whole interval into a `manual` SpeechEvent,

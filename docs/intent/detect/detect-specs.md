@@ -23,6 +23,7 @@ EARS requirements for [detect](detect-design.md). Markers: `[x]` implemented, `[
 - [ ] **DETECT-GEO-002**: The system shall compute the BirdNET week from the UTC date of the file start as `4 × (month − 1) + min(4, ⌈day / 7⌉)`.
 - [ ] **DETECT-GEO-003**: When a detect run uses a species list, the system shall write it to `geo_species_lists` with `site_id`, `week`, `label`, `occurrence_score`, and `run_id`.
 - [ ] **DETECT-GEO-004**: The system shall set each detection's `in_geo_list` to whether its label is in the site-and-week species list, and never drop a detection for being outside it.
+- [ ] **DETECT-GEO-005**: The system shall include the site's generalized latitude and longitude in each detect unit's parameters, so a change to them re-runs detect for that site's files.
 
 ## Detect Flow
 

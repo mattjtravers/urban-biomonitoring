@@ -215,10 +215,18 @@ the rule's date. On the `filesystem` backend the view reports `FILESYSTEM` for e
 
 A file's processing status is derived from the stage-unit ledger
 ([runs](../runs/runs-design.md)) rather than stored on the record. The `audio_file_status` view
-reports the furthest stage completed: `quarantined` → `screened` → `archived` → `purged`, or
-`held` (a succeeded `speech-sample` unit whose `output_refs` include the hold link, with no
-later succeeded `speech-label` unit; not archived until its labels are imported), or
-`flagged` (stopped with a recorded reason; never purged automatically).
+reports one status per file, the first of these that applies:
+
+1. `discarded`: a succeeded `purge` unit with `reason_code` `discarded` (deleted by operator
+   decision, never archived);
+2. `flagged`: some stage's latest ledger row for the file is `flagged` (stopped with a recorded
+   reason; never purged automatically), even after a later stage succeeded;
+3. `held`: a succeeded `speech-sample` unit whose `output_refs` include the hold link, with no
+   later succeeded `speech-label` unit (not archived until its labels are imported);
+4. otherwise the furthest stage completed: `purged`, `archived`, `screened`, or `quarantined`.
+
+Card-wipe readiness doesn't use this status; it applies its own archived-and-verified test
+([intake](../ingest/intake/intake-design.md) § Card Wipe Readiness).
 
 ### AudioMaskVersion
 
@@ -367,7 +375,7 @@ batches, name their files after the unit (`deployments`: `<deployment_id>-<run_i
 `deployments` rows, which keep `<deployment_id>-<run_id>.parquet` whichever run writes them.
 
 Every table written by units (all except the run-level tables `media_retrievals`,
-`retrieval_anomalies`, `geo_species_lists`, `sites`, and `runs`, the `deployments` rows an
+`retrieval_anomalies`, `device_file_discards`, `geo_species_lists`, `sites`, and `runs`, the `deployments` rows an
 `ingest` run writes, and the ledger `stage_units`, whose own `stage` and
 `unit_id` are the units it records) carries two columns beyond its entity's fields:
 `stage` (the stage of the unit that wrote the row) and `unit_id` (that unit's ID, as defined in
@@ -382,6 +390,7 @@ ignored, and a retry never produces rows that are counted twice.
 | `deployments` | `curated/deployments/` | none | deployment change: an `admin` unit, or an `ingest` run's updates at run end (`<deployment_id>-<run_id>.parquet`) |
 | `media_retrievals` | `curated/media_retrievals/` | `site_id=` | ingest run (one row per part) |
 | `retrieval_anomalies` | `curated/retrieval_anomalies/` | `site_id=` | screen, archive, or rescreen run that records an anomaly (`<run_id>.parquet`) |
+| `device_file_discards` | `curated/device_file_discards/` | `site_id=` | purge run that discards device files (`retrieval_id`, `part`, `manifest_path`, `reason`, `run_id`; `<run_id>.parquet`) |
 | `audio_files` | `curated/audio_files/` | `site_id=`, `year_month=` | ingest run × batch |
 | `audio_mask_versions` | `curated/audio_mask_versions/` | `site_id=`, `year_month=` | archive or rescreen run × batch |
 | `speech_events` | `curated/speech_events/` | `site_id=`, `year_month=` | screen, rescreen, or speech-label run × batch (`manual` events come from label import) |
@@ -414,7 +423,7 @@ QUALIFY row_number() OVER (PARTITION BY audio_file_id ORDER BY mask_version DESC
 succeeded detect run on that file, whichever mask version it analyzed, with
 `overlaps_current_mask` added. A re-mask therefore leaves a file's detections in place; the
 windows it covers drop out through `overlaps_current_mask`. Run-level tables (`media_retrievals`,
-`retrieval_anomalies`, `geo_species_lists`, `sites`, `runs`, and `ingest`'s `deployments` rows)
+`retrieval_anomalies`, `device_file_discards`, `geo_species_lists`, `sites`, `runs`, and `ingest`'s `deployments` rows)
 follow the run-level rule in
 [runs](../runs/runs-design.md) § Current Rows.
 

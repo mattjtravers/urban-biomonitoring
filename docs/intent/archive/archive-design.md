@@ -84,8 +84,8 @@ already written.
 The work-directory FLAC is kept until the detect stage has processed that file, so detect
 needn't download it. Detect then deletes it.
 
-**Device files.** The summary log, diagnostics, and unknown files from the card are written
-verbatim to the store under the retrieval prefix ([store](../store/store-design.md) § Key
+**Device files.** At the start of each archive run, before any audio batch, the summary log,
+diagnostics, and unknown files from the card are written verbatim to the store under the retrieval prefix ([store](../store/store-design.md) § Key
 Layout), after a content check: any file whose header
 identifies it as audio (RIFF/WAVE, FLAC, Ogg, MP3) and wasn't processed as an audio file is
 **not written to the store**. Device files aren't ledger units, so it is recorded as an
@@ -97,6 +97,9 @@ Before writing a device file, the archive `head`s its key. An object with the sa
 an earlier run already wrote it, and the write is skipped, so a resumed run doesn't fail on
 files it uploaded before the crash. An object with a different SHA-256 raises `IntegrityError`
 (`archive_conflict`), recorded in the run's errors, and the file stays in the quarantine.
+The run's `unexpected_audio` rows are written at run end with its other run-level rows; a run
+that crashes first writes none, and the resumed run, which checks every device file again,
+records them.
 
 ## Header Sidecar
 
@@ -153,8 +156,10 @@ mask version:
   same `stage` and `unit_id` (the AudioMaskVersion row, the new `speech_events` rows, and any
   `clip_withdrawals` rows) into its own batch under its own `run_id`, finishes any clip
   withdrawals still pending, and writes the ledger row. The copied rows keep their content IDs.
-  Until then, every reader that fetches the file and finds this state treats the unit as
-  `failed` (`remask_in_progress`), not flagged, so it is retried automatically. Any other
+  Until then, every unit that fetches the file and finds this state (detect, and validate's
+  clip cutting) treats the unit as `failed` (`remask_in_progress`), not flagged, so it is
+  retried automatically. Archive's own first writes never meet this state, and curate and
+  publish read tables and clips, not archive objects. Any other
   mismatch between an archived object and its records is `archive_conflict`.
 - **Clips are withdrawn.** Every clip in the `clips` table cut from this file whose window
   (including its context) overlaps an interval the new mask adds, and that isn't already

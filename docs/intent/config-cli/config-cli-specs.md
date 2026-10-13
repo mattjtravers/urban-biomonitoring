@@ -57,10 +57,10 @@ active gap, `[D]` deferred.
 - [ ] **CLI-CMD-004**: When `urbanbio site list` runs, the system shall print each site with its generalized coordinates only.
 - [ ] **CLI-CMD-005**: When `urbanbio deployment create` runs with `--settings FILE`, the system shall read any of `sample_rate_hz`, the `schedule` fields, `gain_db`, `mount_height_m`, `mount_heading_deg`, `tags`, and `comments` from that TOML file, taking unset recording values from `[recording]`, and shall raise a `ConfigError` for any other key or for a coordinate-like pair as defined in CLI-CHECK-004.
 - [ ] **CLI-CMD-006**: When `urbanbio deployment create` or `deployment end` runs, the system shall record the change as an `admin` run with one unit.
-- [ ] **CLI-CMD-007**: When `urbanbio process` runs, the system shall run `ingest`, `screen`, the optional speech sample (with `--speech-sample N`), `archive`, and `detect` in that order, each as its own run, passing a `partial` stage's succeeded files to the next stage, and when a stage's run ends `failed`, shall stop before the next stage and exit with that run's exit code.
+- [ ] **CLI-CMD-007**: When `urbanbio process` runs, the system shall run `ingest`, `screen`, the optional speech sample (with `--speech-sample N`), `archive`, and `detect` in that order, each as its own run, passing a `partial` stage's succeeded files to the next stage; when a stage's run ends `failed`, it shall stop before the next stage; and it shall exit with that failed run's code, else `2` if any stage ended `partial`, else `0`.
 - [ ] **CLI-CMD-008**: When `urbanbio query` runs, the system shall open a DuckDB shell on a connection from `urbanbio.storage.tables.connect` (DATA-VIEW-001).
 - [ ] **CLI-CMD-009**: When `urbanbio runs list [--stage S]` or `runs show RUN` runs, the system shall print run records from the store.
-- [ ] **CLI-EXIT-001**: The system shall exit `0` on success, `1` when a run failed, `2` when a run ended partial (some units flagged or failed), `3` on a configuration error (including the store marker), and `4` when the lock is held.
+- [ ] **CLI-EXIT-001**: The system shall exit `0` on success, `1` when a run failed for any reason other than a `ConfigError`, `2` when a run ended partial (some units flagged or failed), `3` on a `ConfigError` raised before or during a run (including the store marker), and `4` when the lock is held.
 
 ## Errors
 

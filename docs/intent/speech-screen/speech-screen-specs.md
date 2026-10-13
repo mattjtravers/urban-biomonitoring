@@ -12,7 +12,7 @@ EARS requirements for [speech-screen](speech-screen-design.md). Markers: `[x]` i
 - [ ] **SCREEN-DET-005**: When the `silero-vad` detector screens a file, the system shall resample the samples from 48 kHz to 16 kHz with `scipy.signal.resample_poly(x, 1, 3)` as float32 in [-1, 1] and run `silero-vad==6.2.3` with `load_silero_vad(onnx=True)`, `threshold = screen.silero_threshold`, `min_speech_duration_ms = screen.silero_min_speech_ms`, `min_silence_duration_ms = 100`, `speech_pad_ms = 30`, and `window_size_samples = 512`.
 - [ ] **SCREEN-DET-006**: When `silero-vad` returns a speech segment, the system shall record a SpeechEvent with its start and end in seconds and the maximum frame probability within it as the score.
 - [ ] **SCREEN-DET-007**: The system shall not mask BirdNET's `Human non-vocal` or `Human whistle` classes unless they are listed in `screen.birdnet_mask_labels`.
-- [ ] **SCREEN-SCOPE-001**: When `urbanbio screen --retrieval R` runs, the system shall screen only the retrieval's audio files whose current `ingest` unit succeeded and that have no succeeded `archive` unit, leaving archived files to `rescreen`.
+- [ ] **SCREEN-SCOPE-001**: When `urbanbio screen --retrieval R` runs, the system shall screen only the retrieval's audio files whose current `ingest` unit succeeded and that have no `succeeded` `archive` unit from a run with `git_dirty: false`, leaving files archived by a clean run to `rescreen`.
 
 ## Padding, Merging, and the Mask
 
@@ -47,11 +47,11 @@ EARS requirements for [speech-screen](speech-screen-design.md). Markers: `[x]` i
 
 ## Speech Recall
 
-- [ ] **SCREEN-RECALL-001**: When `urbanbio speech recall` runs, the system shall compute event recall as labeled speech intervals with at least 90% of their duration inside the detector mask (the padded union of the file's `birdnet-human` and `silero-vad` events only) divided by all labeled intervals, with a Wilson 95% interval.
+- [ ] **SCREEN-RECALL-001**: When `urbanbio speech recall` runs, the system shall compute event recall as labeled speech intervals with at least 90% of their duration inside the detector mask (the padded union of the `birdnet-human` and `silero-vad` events from the file's `screen` unit only, excluding `rescreen` and `manual` events) divided by all labeled intervals, with a Wilson 95% interval.
 - [ ] **SCREEN-RECALL-002**: When `urbanbio speech recall` runs, the system shall compute time recall as labeled speech seconds inside the detector mask divided by labeled speech seconds.
 - [ ] **SCREEN-RECALL-003**: When `urbanbio speech recall` runs, the system shall compute masked fraction as masked seconds over recorded seconds using the archived mask, including `manual` events.
 - [ ] **SCREEN-RECALL-004**: When `urbanbio speech recall` runs, the system shall report labeled intervals caught by `birdnet-human` only, `silero-vad` only, and both, excluding `manual` events.
-- [ ] **SCREEN-RECALL-005**: When `urbanbio speech recall` runs, the system shall report each metric per stratum and weighted to the population by stratum sizes.
+- [ ] **SCREEN-RECALL-005**: When `urbanbio speech recall` runs, the system shall report each metric per stratum, weighted to the population by stratum sizes, and separately for each `screen` `params_hash`.
 
 ## Re-screening
 

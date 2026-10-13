@@ -86,6 +86,10 @@ non-target classes the HLD requires. Instead of filtering, detect **flags**:
   the BirdNET week, from the UTC date of the file start. BirdNET defines the week only as
   1–48, "4 weeks per month" (BirdNET Analyzer CLI help). This project maps days with
   `week = 4 × (month − 1) + min(4, ⌈day / 7⌉)`.
+- The site's generalized latitude and longitude are part of the detect unit's parameters, and
+  so of its `params_hash`. They are public values, and a change to them (for example, a coarser
+  per-site `coordinate_precision_deg`) changes the geo flag, so it re-runs detect for that
+  site's files (HLD G1).
 - Each run writes the lists it used to `geo_species_lists` (`site_id`, `week`, `label`,
   `occurrence_score`, `run_id`), and each detection gets `in_geo_list`.
 - Non-target classes are never in the geo list. Downstream code uses `is_target_taxon` to tell

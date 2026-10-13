@@ -16,6 +16,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 ## Stage-Unit Ledger
 
 - [ ] **RUN-LEDGER-001**: When a stage finishes a unit attempt, the system shall record one `stage_units` row with `stage`, `unit_id`, `idempotency_key`, `run_id`, `status`, `reason_code`, `waived_reason_codes`, `related_unit_id`, `output_refs`, `git_dirty` (copied from the run record), and `finished_utc`.
+- [ ] **RUN-LEDGER-002**: The system shall set `reason_code` only on `flagged` and `failed` rows, except `discarded` on a `succeeded` `purge` row for a file the operator discarded.
 
 ## Write Order
 
@@ -31,7 +32,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 - [ ] **RUN-CURRENT-001**: The system shall count a row of a unit-scoped table only when a `succeeded` `stage_units` row exists with the same `stage`, `unit_id`, and `run_id`.
 - [ ] **RUN-CURRENT-002**: When a unit has `succeeded` in more than one run, the system shall treat the rows from the run with the latest `finished_utc` as the unit's current rows.
 - [ ] **RUN-CURRENT-003**: The system shall decide whether a row counts only from its `stage`, `unit_id`, and `run_id` and the ledger, never from the row's other columns or the run's status.
-- [ ] **RUN-CURRENT-004**: The system shall count rows of the run-level tables (`media_retrievals`, `retrieval_anomalies`, `geo_species_lists`, `sites`, `runs`, and the `deployments` rows an `ingest` run writes) only when their run's record has a status other than `running`.
+- [ ] **RUN-CURRENT-004**: The system shall count rows of the run-level tables (`media_retrievals`, `retrieval_anomalies`, `device_file_discards`, `geo_species_lists`, `sites`, `runs`, and the `deployments` rows an `ingest` run writes) only when their run's record has a status other than `running`.
 - [ ] **RUN-CURRENT-005**: When a run writes a run-level table, the system shall write it once, at run end, computed over the run's whole scope including units completed by earlier runs.
 - [ ] **RUN-CURRENT-006**: The system shall implement the current-rows rule once, in `urbanbio.storage.tables`, as a `<table>_current` view per unit-scoped table, and every reader of stage outputs shall read through those views.
 
@@ -48,6 +49,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 - [ ] **RUN-WAIVE-003**: When a unit covered by a waiver fails a check with a reason code the waiver doesn't name, the system shall flag the unit.
 - [ ] **RUN-WAIVE-004**: The system shall match waivers to units by stage, unit ID, and reason code, not by idempotency key, so a waiver applies after stage-version or parameter changes.
 - [ ] **RUN-WAIVE-005**: The system shall never record a `PrivacyError` as a unit-level flag, so no privacy check can be waived.
+- [ ] **RUN-WAIVE-006**: When `urbanbio runs unflag` records a waiver, the system shall not re-run the waived unit; the unit runs when the operator next runs a command whose scope includes it.
 
 ## Run Record
 
@@ -69,7 +71,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 
 ## Concurrency
 
-- [ ] **RUN-LOCK-001**: When a command that creates runs starts, the system shall take an exclusive lock file `<paths.state>/urbanbio.lock` holding its PID and `run_id`, and release it when the command ends.
+- [ ] **RUN-LOCK-001**: When a command that creates runs starts, the system shall take an exclusive lock file `<paths.state>/urbanbio.lock` holding its PID and current `run_id`, rewrite the `run_id` as each later run of the same command starts (as `process` does per stage), and release the lock when the command ends.
 - [ ] **RUN-LOCK-002**: If the lock is held by a live process, then the system shall exit with a `LockError` (exit `4`) naming the holder's PID and `run_id`.
 - [ ] **RUN-LOCK-003**: If the lock's PID is not alive, then the system shall report the stale lock and exit with a `LockError` (exit `4`), unless `--force-unlock` is given, in which case it shall remove the lock and continue.
 

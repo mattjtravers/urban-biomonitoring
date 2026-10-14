@@ -20,7 +20,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from urbanbio.errors import ConfigError
 from urbanbio.models.site import Site, check_timezone
@@ -113,11 +113,28 @@ class QuarantineConfig(_Table):
     min_free_gb: float = Field(ge=0)
 
 
+# @spec STORE-CFG-001, STORE-CFG-002, STORE-CFG-004
 class StoreConfig(_Table):
     backend: Literal["s3", "filesystem"]
     region: str | None = None
     glacier_transition_days: int | None = None
     root: Path | None = Field(default=None, strict=False)
+
+    @model_validator(mode="after")
+    def _keys_match_backend(self) -> StoreConfig:
+        if self.backend == "s3" and self.root is not None:
+            raise ValueError("`root` belongs to the filesystem backend, not s3")
+        if self.backend == "filesystem":
+            stray = [
+                name
+                for name in ("region", "glacier_transition_days")
+                if getattr(self, name) is not None
+            ]
+            if stray:
+                raise ValueError(f"{', '.join(stray)} belong to the s3 backend, not filesystem")
+            if self.root is None:
+                raise ValueError("the filesystem backend requires `root`")
+        return self
 
 
 class PipelineConfig(_Table):
@@ -232,8 +249,8 @@ def site_offset_m(site_id: str, latitude_deg: float, longitude_deg: float) -> fl
     return float(2 * EARTH_RADIUS_M * math.asin(min(1.0, math.sqrt(h))))
 
 
-# @spec CLI-CHECK-001, CLI-CHECK-002, CLI-CHECK-003, CLI-CHECK-004, CLI-CHECK-005, CLI-CHECK-008
-# @spec CLI-CHECK-010
+# @spec CLI-CHECK-001, CLI-CHECK-002, CLI-CHECK-003, CLI-CHECK-004, CLI-CHECK-005, CLI-CHECK-006
+# @spec CLI-CHECK-007, CLI-CHECK-008, CLI-CHECK-010, CLI-CHECK-011
 def check() -> list[CheckResult]:
     """Run every `config check` check for the current profile. Never raises a ConfigError.
 
@@ -304,6 +321,7 @@ def check() -> list[CheckResult]:
         else:
             add("coordinate_like", "ok", "no coordinate-like values in configuration files")
 
+    directories_ok = False
     if cfg is None:
         not_checked("paths_outside_repo", "configuration didn't load")
         not_checked("directories", "configuration didn't load")
@@ -322,8 +340,10 @@ def check() -> list[CheckResult]:
         if problems:
             add("directories", "fail", "; ".join(problems), "; ".join(fixes))
         else:
+            directories_ok = True
             add("directories", "ok", "quarantine, work, and state exist with mode 0700")
 
+    private_ok = False
     if profile is None or cfg is None:
         not_checked("private_vars", "configuration didn't load")
     else:
@@ -339,6 +359,7 @@ def check() -> list[CheckResult]:
                 "set these variables in the environment (see the runbooks)",
             )
         else:
+            private_ok = True
             add("private_vars", "ok", "required private variables are set")
 
     dev_sites_set = profile == "dev" and "URBANBIO_SITES" in os.environ
@@ -364,21 +385,27 @@ def check() -> list[CheckResult]:
         except ConfigError as err:
             add("sites", "fail", str(err), "fix the site configuration (format: config-cli LLD)")
 
-    # The store checks need the store segment (store LLD § Store Marker, § Same-Filesystem Rule).
-    add(
-        "store",
-        "fail",
-        "the store can't be checked: store backends aren't implemented yet",
-        "none yet; this check passes once store support lands",
+    # The store is contacted only with a complete configuration (CLI-CHECK-011).
+    same_filesystem_applies = (
+        cfg is not None and profile == "processing" and cfg.store.backend == "filesystem"
     )
-    if cfg is not None and profile == "processing" and cfg.store.backend == "filesystem":
-        add(
-            "same_filesystem",
-            "fail",
-            "store.root and paths.quarantine can't be compared yet: store backends aren't "
-            "implemented",
-            "none yet; this check passes once store support lands",
-        )
+    if cfg is None:
+        blocker = "configuration didn't load"
+    elif not private_ok:
+        blocker = "a required private variable is missing"
+    elif not directories_ok:
+        blocker = "the data directories failed their check"
+    else:
+        blocker = None
+    if blocker is not None:
+        not_checked("store", blocker)
+        if same_filesystem_applies:
+            not_checked("same_filesystem", blocker)
+    else:
+        assert cfg is not None
+        add(*_store_result(cfg))
+        if same_filesystem_applies:
+            add(*_same_filesystem_result(cfg))
 
     if cfg is not None:
         cpus = os.cpu_count() or 1
@@ -393,6 +420,58 @@ def check() -> list[CheckResult]:
         else:
             add("workers", "ok", f"resources.workers ({cfg.resources.workers}) fits {cpus} CPUs")
     return results
+
+
+def _store_result(cfg: PipelineConfig) -> tuple[str, Literal["ok", "fail"], str, str]:
+    """Open the store as every command does. Messages never name the bucket."""
+    from urbanbio.errors import UrbanbioError
+    from urbanbio.storage.store import open_store
+
+    root = cfg.store.root
+    if cfg.store.backend == "filesystem" and root is not None and not root.is_dir():
+        return (
+            "store",
+            "fail",
+            f"store.root doesn't exist as a directory: {root}",
+            "create store.root (or mount the share), then run `urbanbio store init`",
+        )
+    try:
+        open_store(cfg)
+    except ConfigError as err:
+        fix = (
+            "run `urbanbio store init` to initialize a new store, or point the configuration "
+            "at an existing one"
+            if err.reason_code == "store_marker_missing"
+            else "point the configuration at the store this profile initialized"
+        )
+        return "store", "fail", str(err), fix
+    except (UrbanbioError, OSError) as err:
+        return (
+            "store",
+            "fail",
+            f"the store can't be opened: {err}",
+            "check the network or share, then run `urbanbio config check` again",
+        )
+    return "store", "ok", f"the {cfg.store.backend} store opened and its marker matches", ""
+
+
+def _same_filesystem_result(cfg: PipelineConfig) -> tuple[str, Literal["ok", "fail"], str, str]:
+    from urbanbio.storage.filesystem import FilesystemStore
+
+    assert cfg.store.root is not None
+    if FilesystemStore(cfg.store.root).same_filesystem_as(cfg.paths.quarantine):
+        return (
+            "same_filesystem",
+            "fail",
+            "store.root is on the same filesystem as paths.quarantine",
+            "put store.root on another disk or a mounted share (and check the share is mounted)",
+        )
+    return (
+        "same_filesystem",
+        "ok",
+        "store.root and paths.quarantine are on different filesystems",
+        "",
+    )
 
 
 # --- Layers ---------------------------------------------------------------------------------
@@ -493,7 +572,9 @@ def _merge(layers: _Layers) -> dict[str, Any]:
         merged[name] = dict(table) if isinstance(table, dict) else table
     for name, table in layers.operator.items():
         base = merged.get(name)
-        if isinstance(base, dict) and isinstance(table, dict):
+        # A backend switch replaces the store table, so the other backend's keys don't carry over.
+        switches_backend = name == "store" and isinstance(table, dict) and "backend" in table
+        if isinstance(base, dict) and isinstance(table, dict) and not switches_backend:
             merged[name] = {**base, **table}
         else:
             merged[name] = table

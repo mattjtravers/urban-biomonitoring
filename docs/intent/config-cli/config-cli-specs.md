@@ -13,7 +13,7 @@ active gap, `[D]` deferred.
 
 - [x] **CLI-PROF-001**: If `URBANBIO_PROFILE` is unset or names a profile other than `processing` or `dev`, then every command except `--help` shall exit with a `ConfigError`.
 - [x] **CLI-PROF-002**: The system shall select the profile only from `URBANBIO_PROFILE`, never from properties of the host.
-- [x] **CLI-CFG-001**: When configuration loads, the system shall read `config/pipeline.toml`, then `config/<URBANBIO_PROFILE>.toml`, then the operator config file named by `URBANBIO_CONFIG` when set, with each key the operator file sets replacing the profile's value for that key.
+- [x] **CLI-CFG-001**: When configuration loads, the system shall read `config/pipeline.toml`, then `config/<URBANBIO_PROFILE>.toml`, then the operator config file named by `URBANBIO_CONFIG` when set, with each key the operator file sets replacing the profile's value for that key, except that an operator `[store]` table that sets `backend` replaces the profile's whole `[store]` table.
 - [x] **CLI-CFG-002**: If `config/pipeline.toml` contains a deployment table (`[paths]`, `[resources]`, `[quarantine]`, `[store]`), or a profile file or the operator config file contains any other table, then the system shall raise a `ConfigError`.
 - [x] **CLI-CFG-003**: If `URBANBIO_CONFIG` is set to a path that is relative after `~` expansion, doesn't exist, isn't a regular file, or lies inside the repository working tree, then the system shall raise a `ConfigError`.
 - [x] **CLI-CFG-004**: The system shall validate the loaded configuration into Pydantic models, raising a `ConfigError` for an unknown key or a value of the wrong type.
@@ -43,11 +43,12 @@ active gap, `[D]` deferred.
 - [ ] **CLI-CHECK-003**: When `urbanbio config check` runs, the system shall fail when the site configuration doesn't parse, names a time zone not in the IANA database, sets a `coordinate_precision_deg` finer than `publish.coordinate_precision_deg`, or lacks a site that a deployment in the `current_deployments` view references.
 - [x] **CLI-CHECK-004**: When `urbanbio config check` runs, the system shall fail when any table in a configuration layer holds a numeric key whose name contains `lat` and a numeric key whose name contains `lon` (case-insensitive), either of whose values isn't a multiple of `publish.coordinate_precision_deg` to within 10⁻⁹.
 - [x] **CLI-CHECK-005**: When `urbanbio config check` runs, the system shall fail when a configured path lies inside the repository working tree, or the quarantine, work, or state directory is missing or has a mode other than `0700`.
-- [ ] **CLI-CHECK-006**: When `urbanbio config check` runs, the system shall fail when the store can't be opened (unreachable, marker missing, or marker naming another profile).
-- [ ] **CLI-CHECK-007**: While the profile is `processing` with the `filesystem` backend, when `urbanbio config check` runs, the system shall fail when `store.root` is on the same filesystem as `paths.quarantine`.
+- [x] **CLI-CHECK-006**: When `urbanbio config check` runs, the system shall open the store through `open_store` and fail when it can't be opened (unreachable, marker missing, or marker naming another profile), writing nothing to the store.
+- [x] **CLI-CHECK-007**: While the profile is `processing` with the `filesystem` backend, when `urbanbio config check` runs, the system shall fail when `store.root` is on the same filesystem as `paths.quarantine`.
 - [x] **CLI-CHECK-008**: While the profile is `dev`, when `urbanbio config check` runs, the system shall fail when `URBANBIO_SITES` is set.
 - [x] **CLI-CHECK-009**: When `urbanbio config check` finds failures, the system shall print each failing check with its fix, never print the value of a private variable, and exit `3`.
 - [x] **CLI-CHECK-010**: When `urbanbio config check` finds `resources.workers` greater than the host's reported CPU count, the system shall print a warning without failing.
+- [x] **CLI-CHECK-011**: When `urbanbio config check` runs and the configuration didn't load, a required private variable is missing or empty (CLI-CHECK-002), or the data directories fail CLI-CHECK-005, the system shall fail the `store` and `same_filesystem` checks as not checked without contacting the store.
 
 ## Commands
 

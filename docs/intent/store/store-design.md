@@ -55,7 +55,10 @@ glacier_transition_days = 30       # s3 only; must equal the bucket's lifecycle 
 | `root` | `filesystem` | none in `processing`; `~/urbanbio-dev/store` in `dev` | Expanded and resolved; must lie outside the repository working tree |
 
 A key that belongs to the other backend is a `ConfigError`, so a configuration can't look as if
-it uses a store it doesn't. The `s3` bucket name is private and comes from `URBANBIO_BUCKET`; the
+it uses a store it doesn't. An operator config file that sets `backend` replaces the profile's
+whole `[store]` table, so switching backends never inherits the other backend's keys
+([config-cli](../config-cli/config-cli-design.md) § Configuration). With `filesystem`, an
+unset `root` is a `ConfigError`. The `s3` bucket name is private and comes from `URBANBIO_BUCKET`; the
 `filesystem` root is public configuration, kept in the operator config file when it names an
 institution's share.
 
@@ -94,9 +97,13 @@ Contract, on every backend:
   `overwrite=True` is accepted only:
   - under `runs/`, for rewriting a run record and its log;
   - under `archive/`, when the existing object's `mask-version` metadata is lower than the new
-    one's. The backend reads the existing object with `head` and replaces it only if it is
-    unchanged since that read; otherwise it raises `StorageError` (`store_object_changed`)
-    without replacing it.
+    one's, both compared as decimal integers. The backend reads the existing object with `head`
+    and replaces it only if it is unchanged since that read; otherwise it raises `StorageError`
+    (`store_object_changed`) without replacing it. When either object's `mask-version` is
+    missing or isn't a decimal integer, the overwrite is forbidden.
+
+  Under either prefix, when no committed object exists at the key, `overwrite=True` writes it
+  as `overwrite=False` would.
 
   Any other `overwrite=True` raises `StorageError` (`store_overwrite_forbidden`) before
   writing.
@@ -109,11 +116,15 @@ Contract, on every backend:
 - **`list`** yields keys under `prefix` in lexicographic order.
 - **`delete`** removes the object at `key`. A key outside `clips/` raises `StorageError`
   (`store_delete_forbidden`) before the backend is called.
-- **Keys** are relative POSIX paths built by `urbanbio.storage.paths`: no leading `/`, no `.` or
-  `..` segment, no empty segment, and only `[A-Za-z0-9._=-]` and `/`. Any other key raises
-  `ValueError`.
+- **Keys** are relative POSIX paths built by `urbanbio.storage.paths`: no leading `/`, no
+  empty segment, no segment beginning with `.` (so no `.` or `..`, and nothing a backend could
+  mistake for its own hidden files), and only `[A-Za-z0-9._=-]` and `/`. The one exception is
+  the marker key `.urbanbio-store.json`. Any other key raises `ValueError`.
 - **Transient failures** (network, a share that stops responding) raise `StorageError`
-  (`store_unavailable`) after the backend's retries.
+  (`store_unavailable`) after the backend's retries. On `s3` these are botocore's retries; on
+  `filesystem`, an `OSError` with errno `EIO`, `ETIMEDOUT`, `ESTALE`, `EHOSTDOWN`, or
+  `ENOTCONN` is transient, and the backend retries the whole operation up to 3 more times,
+  waiting 0.5, 1, and 2 seconds. Any other `OSError` is raised as it is.
 
 A single contract test suite, parametrized over both backends (`s3` against `moto`,
 `filesystem` against a temporary directory), exercises every rule above. A new backend passes
@@ -163,7 +174,9 @@ original path. The part's manifest records each device file's original path with
 
 - **`urbanbio store init`** writes the marker for the current profile, with a random
   `store_id`. It refuses when a marker already exists (whatever its profile), and when the store
-  already holds any object, so it never adopts a store it didn't create. On the `filesystem`
+  already holds any object, so it never adopts a store it didn't create. On `filesystem`, any
+  file or directory in the root counts, committed or not. Every refusal is a `ConfigError`, so
+  the command exits `3` without writing. On the `filesystem`
   backend it requires `root` to exist as a directory (it never creates the root, so it can't
   create a store inside an unmounted mount point) and, in the `processing` profile, refuses
   when `root` is on the same filesystem as `paths.quarantine` (compared by device ID; see
@@ -189,7 +202,8 @@ The marker holds no private value; the `store_id` is random.
 The bucket is named by `URBANBIO_BUCKET`. The backend builds its boto3 client from
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `[store] region` read from configuration and
 `os.environ` only: it passes credentials explicitly and never falls back to the AWS shared
-credentials or config files (HLD §8). Retries use botocore's `standard` mode with 5 attempts.
+credentials or config files (HLD §8). Retries use botocore's `standard` mode with 5 attempts in
+total (`total_max_attempts = 5`; botocore's `max_attempts` counts retries after the first).
 
 | Operation | AWS S3 call |
 |---|---|
@@ -319,7 +333,8 @@ operator provides.
 | `table_glob` | `<root>/<prefix>**/*.parquet` |
 | `configure_duckdb` | No setup |
 
-**Modes.** Directories are created with mode `0750` and files with `0640`, so the operator can
+**Modes.** Directories are created with mode `0750` and files with `0640`, set with `chmod`
+so they hold under any umask, so the operator can
 grant a lab group read access through the root's group (for example, a setgid root directory)
 without the pipeline widening access itself. Files under `archive/` are set to `0440` before the
 rename, so they can't be modified in place; a re-mask replaces the file by rename, which needs
@@ -363,7 +378,9 @@ Each host records the `store_id` it last opened in `<paths.state>/store-id`. Whe
 finds a different `store_id` (the operator changed `[store]` or `URBANBIO_BUCKET`, or the
 store was replaced):
 
-- if the quarantine holds any `<retrieval_id>/` directory, the command exits with a
+- if the quarantine holds any `<retrieval_id>/` directory (one whose name has the
+  `retrieval_id` format, [data-model](../data-model/data-model-design.md) § Identifiers; not
+  `incoming/` or `speech-labeling/`), the command exits with a
   `ConfigError` (`store_changed`). Purge deletes a retrieval's directory once its files are all
   archived and purged ([intake](../ingest/intake/intake-design.md) § Purge), so a directory that
   remains marks a retrieval in flight; the check reads only the quarantine, because the ledger

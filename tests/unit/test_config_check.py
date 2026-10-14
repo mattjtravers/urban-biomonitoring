@@ -1,23 +1,41 @@
 """`urbanbio config check`, exercised through `config.check()` and the CLI.
 
 `config.check()` returns one result per check, each with a `name`, a `status` (`ok`, `fail`, or
-`warn`), a `message`, and a `fix`. Tests here run without a store, so the `store` check fails in
-every one of them; each test asserts only on the checks it targets.
+`warn`), a `message`, and a `fix`. Most tests here have no store, so the `store` check fails in
+them; each test asserts only on the checks it targets. Any test that sets AWS credentials runs
+under the `aws` fixture (moto), so no check ever reaches AWS.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from botocore.exceptions import EndpointConnectionError
 from typer.testing import CliRunner
 
-from tests.conftest import EXACT_DIGITS, SITES_TOML, Project
+from tests.conftest import (
+    BUCKET,
+    EXACT_DIGITS,
+    MARKER_KEY,
+    SITES_TOML,
+    AwsCalls,
+    Project,
+    store_init,
+)
 from urbanbio import cli, config
 
 
 def statuses() -> dict[str, str]:
     return {r.name: r.status for r in config.check()}
+
+
+def results() -> dict[str, config.CheckResult]:
+    return {r.name: r for r in config.check()}
 
 
 # @spec CLI-CHECK-001
@@ -80,7 +98,7 @@ def test_processing_requires_sites(processing: Project, state: str) -> None:
 
 
 # @spec CLI-CHECK-002
-def test_all_required_variables_present_passes(processing: Project) -> None:
+def test_all_required_variables_present_passes(processing: Project, aws: AwsCalls) -> None:
     for name in ("URBANBIO_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
         processing.monkeypatch.setenv(name, "value")
     assert statuses()["private_vars"] == "ok"
@@ -197,7 +215,7 @@ def test_failing_check_prints_check_and_fix_and_exits_3(processing: Project) -> 
 
 
 # @spec CLI-CHECK-009
-def test_check_never_prints_private_values(processing: Project) -> None:
+def test_check_never_prints_private_values(processing: Project, aws: AwsCalls) -> None:
     secrets = {
         "URBANBIO_BUCKET": "bucket-secret-7f3a",
         "AWS_ACCESS_KEY_ID": "AKIATESTKEYID000",
@@ -226,3 +244,174 @@ def test_more_workers_than_cpus_warns_without_failing(processing: Project) -> No
 def test_workers_within_cpu_count_pass(processing: Project) -> None:
     processing.operator_config("[resources]\nworkers = 1\n")
     assert statuses()["workers"] == "ok"
+
+
+# --- Store ----------------------------------------------------------------------------------
+
+
+def store_files(root: Path) -> list[str]:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+# @spec CLI-CHECK-006
+def test_an_initialized_filesystem_store_passes(fs_env: Project) -> None:
+    assert store_init().exit_code == 0
+    root = fs_env.home / "urbanbio-dev" / "store"
+    before = store_files(root)
+    assert statuses()["store"] == "ok"
+    assert store_files(root) == before
+
+
+# @spec CLI-CHECK-006
+def test_a_filesystem_store_without_a_marker_fails(fs_env: Project) -> None:
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "urbanbio store init" in result.message + result.fix
+    assert list((fs_env.home / "urbanbio-dev" / "store").iterdir()) == []
+
+
+# @spec CLI-CHECK-006
+def test_a_missing_filesystem_root_fails(fs_env: Project) -> None:
+    (fs_env.home / "urbanbio-dev" / "store").rmdir()
+    assert statuses()["store"] == "fail"
+
+
+# @spec CLI-CHECK-006
+def test_a_store_of_another_profile_fails(fs_env: Project) -> None:
+    assert store_init().exit_code == 0
+    fs_env.profile("processing")
+    fs_env.monkeypatch.setenv("URBANBIO_SITES", SITES_TOML)
+    root = fs_env.home / "urbanbio-dev" / "store"
+    fs_env.write(
+        "config/processing.toml",
+        (fs_env.root / "config" / "processing.toml").read_text().split("[store]")[0]
+        + f'[store]\nbackend = "filesystem"\nroot = "{root}"\n',
+    )
+    fs_env.make_data_dirs()
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "processing" in result.message or "profile" in result.message
+
+
+# @spec CLI-CHECK-006
+def test_an_initialized_s3_store_passes_and_writes_nothing(s3_env: Project, aws: AwsCalls) -> None:
+    assert store_init().exit_code == 0
+    aws.calls.clear()
+    assert statuses()["store"] == "ok"
+    assert aws.calls
+    writes = {"PutObject", "DeleteObject", "CopyObject", "CreateMultipartUpload"}
+    assert not writes & set(aws.ops())
+
+
+# @spec CLI-CHECK-006
+def test_an_s3_store_without_a_marker_fails(s3_env: Project, aws: AwsCalls) -> None:
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "urbanbio store init" in result.message + result.fix
+    listed = aws.raw.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+    assert MARKER_KEY not in [o["Key"] for o in listed]
+
+
+# @spec CLI-CHECK-006, CLI-CHECK-009
+def test_an_unreachable_s3_store_fails_without_naming_the_bucket(
+    s3_env: Project, aws: AwsCalls
+) -> None:
+    assert store_init().exit_code == 0
+
+    def unreachable(params: dict) -> None:
+        raise EndpointConnectionError(endpoint_url="https://s3.us-east-1.amazonaws.com")
+
+    for op in ("GetObject", "HeadObject", "ListObjectsV2"):
+        aws.before[op] = unreachable
+    result = results()["store"]
+    assert result.status == "fail"
+    assert BUCKET not in result.message + result.fix
+
+
+# @spec CLI-CHECK-011
+@pytest.mark.parametrize("var", ["URBANBIO_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"])
+def test_store_isnt_contacted_without_the_private_variables(
+    s3_env: Project, aws: AwsCalls, var: str
+) -> None:
+    assert store_init().exit_code == 0
+    aws.calls.clear()
+    s3_env.monkeypatch.setenv(var, "")
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "not checked" in result.message
+    assert aws.calls == []
+
+
+# @spec CLI-CHECK-011
+def test_store_isnt_contacted_when_the_directories_fail(s3_env: Project, aws: AwsCalls) -> None:
+    assert store_init().exit_code == 0
+    aws.calls.clear()
+    (s3_env.home / "urbanbio" / "state").chmod(0o755)
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "not checked" in result.message
+    assert aws.calls == []
+
+
+# @spec CLI-CHECK-011
+def test_store_isnt_contacted_when_configuration_doesnt_load(fs_env: Project) -> None:
+    assert store_init().exit_code == 0
+    fs_env.operator_config("[screen]\npadding_s = 3.0\n")
+    result = results()["store"]
+    assert result.status == "fail"
+    assert "not checked" in result.message
+
+
+# --- Same filesystem ------------------------------------------------------------------------
+
+
+def processing_on_filesystem(project: Project, root: Path) -> None:
+    project.write(
+        "config/processing.toml",
+        (project.root / "config" / "processing.toml").read_text().split("[store]")[0]
+        + f'[store]\nbackend = "filesystem"\nroot = "{root}"\n',
+    )
+
+
+@pytest.fixture
+def other_filesystem_dir(project: Project) -> Iterator[Path]:
+    home_dev = project.home.stat().st_dev
+    for base in ("/dev/shm", "/run/user"):
+        if Path(base).is_dir() and Path(base).stat().st_dev != home_dev:
+            try:
+                path = Path(tempfile.mkdtemp(dir=base))
+            except OSError:
+                continue
+            yield path
+            shutil.rmtree(path, ignore_errors=True)
+            return
+    pytest.skip("no writable directory on another filesystem")
+
+
+# @spec CLI-CHECK-007
+def test_processing_root_on_the_quarantine_filesystem_fails(processing: Project) -> None:
+    root = processing.home / "share"
+    root.mkdir()
+    processing_on_filesystem(processing, root)
+    processing.make_data_dirs()
+    result = results()["same_filesystem"]
+    assert result.status == "fail"
+    assert "paths.quarantine" in result.message
+
+
+# @spec CLI-CHECK-007
+def test_processing_root_on_another_filesystem_passes(
+    processing: Project, other_filesystem_dir: Path
+) -> None:
+    processing_on_filesystem(processing, other_filesystem_dir)
+    processing.make_data_dirs()
+    assert store_init().exit_code == 0
+    result = results()
+    assert result["same_filesystem"].status == "ok"
+    assert result["store"].status == "ok"
+
+
+# @spec CLI-CHECK-007
+def test_dev_doesnt_apply_the_same_filesystem_rule(fs_env: Project) -> None:
+    assert store_init().exit_code == 0
+    assert statuses().get("same_filesystem", "ok") != "fail"

@@ -93,6 +93,11 @@ Configuration is read in three layers:
    directories. It holds an operator's own paths, worker count, budget, and store choice
    without editing committed files.
 
+   One exception: when the operator config file sets `store.backend`, its `[store]` table
+   replaces the profile's whole `[store]` table, so keys that belong to the profile's backend
+   (such as `region` with `s3`) don't carry over to a different backend
+   ([store](../store/store-design.md) § Configuration).
+
 A key in the wrong layer is a `ConfigError`, so a stage parameter can't vary between profiles or
 operators. So is a key that no configuration model defines, or a value of the wrong type, so a
 misspelled key can't silently leave a default in force. Every deployment key has a documented default in its profile file, except
@@ -292,6 +297,12 @@ In `dev`, it also fails when `URBANBIO_SITES` is set.
 
 In `processing` with the `filesystem` backend, it also fails when `store.root` is on the same
 filesystem as `paths.quarantine` ([store](../store/store-design.md) § Same-Filesystem Rule).
+
+The `store` and `same_filesystem` checks run last, and only when the configuration loaded, every
+required private variable is set, and the data directories pass. Otherwise each fails as not
+checked, without contacting the store, so `config check` never reaches a store (or AWS) with an
+incomplete configuration. The store is opened through `open_store`, as every command opens it
+([store](../store/store-design.md) § Store Marker); `config check` writes nothing to the store.
 
 `config.check()` runs the checks and returns one result per check, with a `name`, a `status`
 (`ok`, `fail`, or `warn`), a `message`, and a `fix`; the command prints them. The check names are
@@ -497,6 +508,7 @@ wheels), pinned in `.python-version`. The uv version is pinned too
 | Profile selection | Required `URBANBIO_PROFILE`, no default | Detect the host (e.g., a hosted development environment's variables); default to `dev` | A wrong guess would put real-media paths in the wrong place (Tenet 3), and host detection ties behavior to hosts rather than configuration (Tenet 5). |
 | Per-profile config | Shared `pipeline.toml` plus `<profile>.toml` restricted to deployment tables | One complete file per profile | Stage parameters can't drift between profiles, so the same inputs give the same results wherever they run. |
 | Operator overrides | Optional `URBANBIO_CONFIG` file outside the working tree, deployment tables only | Edit the committed profile files in a fork; environment variables per key | Operators set their own paths, budget, and store without carrying a diff against the repository, and without a variable per key. Restricting it to deployment tables keeps stage parameters identical everywhere. |
+| Store table on a backend switch | An operator `[store]` table that sets `backend` replaces the profile's `[store]` table | Merge per key like every other table; let other-backend keys be ignored | Per-key merging would carry the profile's `s3` keys into a `filesystem` store, which the store refuses, and TOML can't unset a key. Ignoring stray keys would let a configuration look as if it used a store it doesn't. |
 | Dev-profile sites | Committed synthetic sites; `URBANBIO_SITES` refused | Accept `URBANBIO_SITES` in dev | Development never needs real coordinates, and refusing the variable means they can't be loaded into a dev process by accident. |
 | Bucket name | Environment variable | Private config file | The bucket name isn't committed and arrives the same way as the other private values. |
 | Exact coordinates | TOML in an environment variable, reduced at load time | Private TOML file read by the code; copy in the private store with backup/restore commands | Follows the rule that private values come only from the environment, keeps one code path for every profile, and means the code never reads a private file it might log or copy. Editing is less convenient, but sites change rarely. |

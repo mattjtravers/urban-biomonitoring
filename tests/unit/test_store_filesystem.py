@@ -7,10 +7,12 @@ uses.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import stat
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -323,8 +325,9 @@ def test_a_crash_during_delete_leaves_the_key_uncommitted(fs_store: Any, root: P
 
 
 # @spec STORE-FS-007
-def test_directories_and_files_get_their_modes(fs_store: Any, root: Path) -> None:
-    old = os.umask(0o022)
+@pytest.mark.parametrize("umask", [0o022, 0o077, 0o002])
+def test_directories_and_files_get_their_modes(fs_store: Any, root: Path, umask: int) -> None:
+    old = os.umask(umask)
     try:
         put(fs_store, ARCHIVE, metadata={"mask-version": "1"})
         put(fs_store, RUN)
@@ -364,6 +367,61 @@ def test_a_change_after_the_head_fails_the_overwrite(fs_store: Any, root: Path) 
     assert state["done"]
     assert fs_store.head(ARCHIVE).metadata == {"mask-version": "3"}
     assert object_path(root, ARCHIVE).read_bytes() == changed
+
+
+# --- Transient failures --------------------------------------------------------------------
+
+
+def failing_fsync(
+    monkeypatch: pytest.MonkeyPatch, code: int, times: int
+) -> tuple[list[float], dict[str, int]]:
+    """Fail the first `times` fsyncs with `code`; record sleeps instead of sleeping."""
+    sleeps: list[float] = []
+    count = {"failed": 0}
+    real = os.fsync
+
+    def flaky(fd: int) -> None:
+        if count["failed"] < times:
+            count["failed"] += 1
+            raise OSError(code, os.strerror(code))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", flaky)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    return sleeps, count
+
+
+# @spec STORE-FS-011
+def test_a_transient_error_is_retried(fs_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps, _ = failing_fsync(monkeypatch, errno.ESTALE, 2)
+    put(fs_store, CLIP)
+    assert sleeps == [0.5, 1]
+    assert fs_store.head(CLIP).sha256 == sha256_hex(DATA)
+
+
+# @spec STORE-FS-011, STORE-API-016
+@pytest.mark.parametrize(
+    "code", [errno.EIO, errno.ETIMEDOUT, errno.ESTALE, errno.EHOSTDOWN, errno.ENOTCONN]
+)
+def test_a_lasting_transient_error_is_store_unavailable(
+    fs_store: Any, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    sleeps, _ = failing_fsync(monkeypatch, code, 10**6)
+    with pytest.raises(StorageError) as caught:
+        put(fs_store, CLIP)
+    assert caught.value.reason_code == "store_unavailable"
+    assert sleeps == [0.5, 1, 2]
+
+
+# @spec STORE-FS-011
+def test_other_os_errors_are_not_retried(fs_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps, count = failing_fsync(monkeypatch, errno.ENOSPC, 10**6)
+    with pytest.raises(OSError) as caught:
+        put(fs_store, CLIP)
+    assert caught.value.errno == errno.ENOSPC
+    assert not isinstance(caught.value, StorageError)
+    assert sleeps == []
+    assert count["failed"] == 1
 
 
 # --- DuckDB and same-filesystem -------------------------------------------------------------

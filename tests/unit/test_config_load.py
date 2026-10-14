@@ -76,6 +76,29 @@ def test_operator_file_can_switch_store_backend(processing: Project, tmp_path: P
 
 
 # @spec CLI-CFG-001
+def test_an_operator_backend_switch_replaces_the_store_table(
+    processing: Project, tmp_path: Path
+) -> None:
+    # processing.toml sets the s3-only `region` and `glacier_transition_days`; they don't carry
+    # over to the operator's filesystem store.
+    share = tmp_path / "share"
+    processing.operator_config(f'[store]\nbackend = "filesystem"\nroot = "{share}"\n')
+    cfg = config.load(with_sites=False)
+    assert cfg.store.region is None
+    assert cfg.store.glacier_transition_days is None
+
+
+# @spec CLI-CFG-001
+def test_an_operator_store_table_without_backend_merges_per_key(
+    dev: Project, tmp_path: Path
+) -> None:
+    share = tmp_path / "share"
+    dev.operator_config(f'[store]\nroot = "{share}"\n')
+    cfg = config.load(with_sites=False)
+    assert (cfg.store.backend, cfg.store.root) == ("filesystem", share.resolve())
+
+
+# @spec CLI-CFG-001
 def test_stage_parameters_are_identical_in_every_profile(processing: Project) -> None:
     proc = config.load(with_sites=False)
     processing.profile("dev")

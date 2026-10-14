@@ -62,7 +62,8 @@ def test_a_bucket_key_in_configuration_is_refused(s3_env: Project) -> None:
 @pytest.mark.parametrize("var", ["URBANBIO_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"])
 def test_opening_without_a_private_variable_is_a_config_error(s3_env: Project, var: str) -> None:
     assert store_init().exit_code == 0
-    s3_env.monkeypatch.delenv(var)
+    # Empty counts as missing; deleting AWS_* variables would break moto's own cleanup.
+    s3_env.monkeypatch.setenv(var, "")
     with pytest.raises(ConfigError):
         open_store(config.load(with_sites=False))
 

@@ -16,7 +16,8 @@ import typer
 
 from urbanbio import config
 from urbanbio import logging as ulog
-from urbanbio.errors import ConfigError
+from urbanbio.errors import ConfigError, IntegrityError, StorageError
+from urbanbio.storage.marker import init_store
 
 EXIT_OK = 0
 EXIT_RUN_FAILED = 1
@@ -121,11 +122,18 @@ def config_paths() -> None:
 # --- store, site, deployment ----------------------------------------------------------------
 
 
+# @spec STORE-MARK-001, STORE-MARK-002, STORE-MARK-003, STORE-MARK-004
 @store_app.command("init")
 @_command()
 def store_init() -> None:
     """Write the store marker for the current profile."""
-    _not_implemented("store init")
+    cfg = config.load(with_sites=False)
+    try:
+        marker = init_store(cfg)
+    except (StorageError, IntegrityError) as err:
+        typer.echo(f"error ({err.reason_code}): {err}", err=True)
+        raise typer.Exit(EXIT_RUN_FAILED) from None
+    typer.echo(f"initialized store {marker['store_id']} for the {marker['profile']} profile")
 
 
 # @spec CLI-CMD-004

@@ -82,10 +82,16 @@ def test_run_records_can_be_overwritten(store, tmp_path: Path) -> None:
     assert read(store, RUN, tmp_path) == OTHER
 
 
-# @spec STORE-API-006
+# @spec STORE-API-017
 def test_run_record_overwrite_of_a_missing_object_writes_it(store) -> None:
     put(store, RUN, overwrite=True)
     assert store.head(RUN).sha256 == sha256_hex(DATA)
+
+
+# @spec STORE-API-017
+def test_archive_overwrite_of_a_missing_object_writes_it(store) -> None:
+    put(store, ARCHIVE, metadata={"mask-version": "1"}, overwrite=True)
+    assert store.head(ARCHIVE).metadata == {"mask-version": "1"}
 
 
 # @spec STORE-API-007
@@ -111,6 +117,27 @@ def test_archive_overwrite_without_a_higher_mask_version_is_forbidden(
     put(store, ARCHIVE, metadata={"mask-version": "2"})
     with pytest.raises(StorageError) as caught:
         put(store, ARCHIVE, OTHER, metadata={"mask-version": new_version}, overwrite=True)
+    assert caught.value.reason_code == "store_overwrite_forbidden"
+    assert read(store, ARCHIVE, tmp_path) == DATA
+
+
+# @spec STORE-API-008
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ({}, {"mask-version": "2"}),
+        ({"mask-version": "1"}, {}),
+        ({"mask-version": "1"}, {"mask-version": "2a"}),
+        ({"mask-version": "x"}, {"mask-version": "2"}),
+        ({"mask-version": "1"}, {"mask-version": "-2"}),
+    ],
+)
+def test_archive_overwrite_needs_integer_mask_versions(
+    store, tmp_path: Path, old: dict[str, str], new: dict[str, str]
+) -> None:
+    put(store, ARCHIVE, metadata=old)
+    with pytest.raises(StorageError) as caught:
+        put(store, ARCHIVE, OTHER, metadata=new, overwrite=True)
     assert caught.value.reason_code == "store_overwrite_forbidden"
     assert read(store, ARCHIVE, tmp_path) == DATA
 
@@ -227,6 +254,10 @@ BAD_KEYS = [
     "runs/café.json",
     "runs\\a.json",
     "runs/a.json?x",
+    ".hidden",
+    "runs/.meta/a.json",
+    "runs/.a.json.tmp-0001",
+    "runs/.urbanbio-store.json",
 ]
 
 
@@ -241,6 +272,11 @@ def test_invalid_keys_are_refused_by_every_method(store, key: str, tmp_path: Pat
         store.get(key, tmp_path / "out")
     with pytest.raises(ValueError):
         store.delete(key)
+
+
+# @spec STORE-API-015
+def test_the_marker_is_the_only_key_with_a_leading_dot(store) -> None:
+    assert store.head(".urbanbio-store.json") is not None
 
 
 # @spec STORE-API-015

@@ -118,6 +118,18 @@ def test_init_refuses_a_store_that_holds_any_object(s3_env: Project, aws: AwsCal
     assert [o["Key"] for o in listed] == ["runs/someone-elses.json"]
 
 
+# @spec STORE-MARK-002
+@pytest.mark.parametrize("entry", ["notes.txt", "lost+found", ".meta"])
+def test_init_refuses_a_filesystem_root_that_isnt_empty(fs_env: Project, entry: str) -> None:
+    root = dev_root(fs_env)
+    if "." in entry and entry != ".meta":
+        (root / entry).write_text("not ours\n")
+    else:
+        (root / entry).mkdir()
+    assert store_init().exit_code == EXIT_CONFIG
+    assert not (root / MARKER_KEY).exists()
+
+
 # @spec STORE-MARK-003
 def test_init_never_creates_a_missing_root(dev: Project) -> None:
     dev.make_data_dirs()
@@ -233,6 +245,7 @@ def test_a_new_store_id_with_nothing_in_flight_warns_and_continues(
     state_file(fs_env).write_text("st-0000000000000000\n")
     (quarantine(fs_env) / "incoming" / "card-a").mkdir(parents=True)
     (quarantine(fs_env) / "speech-labeling").mkdir()
+    (quarantine(fs_env) / "site7-notes").mkdir()
     with caplog.at_level(logging.WARNING, logger="urbanbio"):
         store = opened()
     store_id = marker(store, tmp_path)["store_id"]

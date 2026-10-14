@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+import boto3
 import pytest
+from botocore.client import BaseClient
+from botocore.exceptions import ClientError
+from moto import mock_aws
+from typer.testing import Result
 
 from urbanbio import config
 
@@ -194,3 +203,133 @@ def processing(project: Project) -> Project:
 def dev(project: Project) -> Project:
     project.profile("dev")
     return project
+
+
+# --- Stores ---------------------------------------------------------------------------------
+
+BUCKET = "test-bucket"
+# Fictional credentials for moto. They belong to no AWS account.
+AWS_KEY_ID = "AKIATESTPIPELINE0001"
+AWS_SECRET_KEY = "test-secret-key-not-real"
+MARKER_KEY = ".urbanbio-store.json"
+BACKENDS = ("filesystem", "s3")
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_b64(data: bytes) -> str:
+    return base64.b64encode(hashlib.sha256(data).digest()).decode()
+
+
+@dataclass
+class AwsCalls:
+    """Every AWS API call the code under test makes, with hooks to fail or alter one.
+
+    `raw` is a client for arranging state behind the store's back; its calls aren't recorded
+    and skip the fidelity patches below.
+    """
+
+    raw: Any
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    clients: list[Any] = field(default_factory=list)
+    before: dict[str, Callable[[dict[str, Any]], None]] = field(default_factory=dict)
+    after: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = field(
+        default_factory=dict
+    )
+
+    def ops(self, key: str | None = None) -> list[str]:
+        return [op for op, params in self.calls if key is None or params.get("Key") == key]
+
+    def params(self, op: str, key: str | None = None) -> list[dict[str, Any]]:
+        return [p for o, p in self.calls if o == op and (key is None or p.get("Key") == key)]
+
+
+def _body_bytes(body: Any) -> bytes:
+    if isinstance(body, bytes | bytearray):
+        return bytes(body)
+    position = body.tell()
+    data = body.read()
+    body.seek(position)
+    return data
+
+
+@pytest.fixture
+def aws(monkeypatch: pytest.MonkeyPatch) -> Iterator[AwsCalls]:
+    """moto in place of AWS, with the bucket created and every client call recorded."""
+    with mock_aws():
+        raw = boto3.client(
+            "s3",
+            region_name="us-east-1",
+            aws_access_key_id=AWS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_KEY,
+        )
+        raw.create_bucket(Bucket=BUCKET)
+        rec = AwsCalls(raw=raw)
+        real = BaseClient._make_api_call
+
+        def spy(client: Any, op: str, params: dict[str, Any]) -> dict[str, Any]:
+            if client is rec.raw:
+                return real(client, op, params)
+            if client not in rec.clients:
+                rec.clients.append(client)
+            rec.calls.append((op, dict(params)))
+            if op in rec.before:
+                rec.before[op](params)
+            # moto stores a PUT whose ChecksumSHA256 doesn't match the body; AWS rejects it.
+            claimed = params.get("ChecksumSHA256") if op == "PutObject" else None
+            if claimed is not None and sha256_b64(_body_bytes(params["Body"])) != claimed:
+                raise ClientError(
+                    {"Error": {"Code": "BadDigest", "Message": "checksum mismatch"}}, op
+                )
+            response = real(client, op, params)
+            if op in rec.after:
+                response = rec.after[op](params, response)
+            return response
+
+        monkeypatch.setattr(BaseClient, "_make_api_call", spy)
+        yield rec
+
+
+def store_init() -> Result:
+    """Run `urbanbio store init` in-process."""
+    from typer.testing import CliRunner
+
+    from urbanbio import cli
+
+    return CliRunner().invoke(cli.app, ["store", "init"])
+
+
+@pytest.fixture
+def fs_env(dev: Project) -> Project:
+    """The dev profile with its data directories and an empty `filesystem` store root."""
+    dev.make_data_dirs()
+    (dev.home / "urbanbio-dev" / "store").mkdir(parents=True)
+    return dev
+
+
+@pytest.fixture
+def s3_env(processing: Project, aws: AwsCalls) -> Project:
+    """The processing profile on the `s3` backend, against moto."""
+    processing.monkeypatch.setenv("URBANBIO_BUCKET", BUCKET)
+    processing.monkeypatch.setenv("AWS_ACCESS_KEY_ID", AWS_KEY_ID)
+    processing.monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", AWS_SECRET_KEY)
+    processing.make_data_dirs()
+    return processing
+
+
+@pytest.fixture(params=BACKENDS)
+def backend(request: pytest.FixtureRequest) -> str:
+    request.getfixturevalue("fs_env" if request.param == "filesystem" else "s3_env")
+    return request.param
+
+
+@pytest.fixture
+def store(backend: str) -> Any:
+    """An initialized, opened store on each backend."""
+    from urbanbio.storage.store import open_store
+
+    result = store_init()
+    assert result.exit_code == 0, result.output
+    return open_store(config.load(with_sites=False))

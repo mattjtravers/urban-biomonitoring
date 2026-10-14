@@ -30,8 +30,8 @@ src/urbanbio/
   errors.py              # Exception hierarchy and reason codes
   logging.py             # Console + JSON-lines file logging
   models/                # Pydantic models (data-model LLD)
-    site.py deployment.py media.py speech.py detection.py
-    validation.py covariates.py summary.py run.py
+    ids.py site.py deployment.py media.py speech.py detection.py
+    validation.py covariates.py summary.py run.py   # ids.py: ID formats, canonical JSON, hashed IDs
   storage/               # Store interface and backends, key layout, marker, Parquet tables (store LLD);
     store.py s3.py filesystem.py paths.py marker.py tables.py
     archive.py flac.py sidecar.py                 # archive (archive LLD)

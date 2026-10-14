@@ -44,7 +44,9 @@ A hashed ID is its prefix followed by the first 16 hex characters of the SHA-256
 canonical JSON ([runs](../runs/runs-design.md) § Units and Idempotency Keys) of an object
 holding the listed fields under their own names; for example, a `detection_id` hashes
 `{"audio_file_id": …, "label": …, "model_id": …, "start_s": …}`. Datetimes in the object are
-ISO 8601 UTC strings.
+ISO 8601 UTC strings with six fractional digits and a `Z` suffix
+(`2026-03-01T12:00:00.000000Z`), so every instant has exactly one form and an ID never changes
+with how a time was written.
 
 A `detection_id` is stable across runs and re-masks: the same model, file, window, and label
 give the same ID, so reviewers' labels, review clips, and published `occurrenceID`s keep pointing
@@ -387,7 +389,8 @@ Every table written by units (all except the run-level tables `media_retrievals`
 `ingest` run writes, and the ledger `stage_units`, whose own `stage` and
 `unit_id` are the units it records) carries two columns beyond its entity's fields:
 `stage` (the stage of the unit that wrote the row) and `unit_id` (that unit's ID, as defined in
-[runs](../runs/runs-design.md) § Units and Idempotency Keys). A row counts only when a
+[runs](../runs/runs-design.md) § Units and Idempotency Keys), and a `run_id` column (the run
+that wrote it) when the entity has no `run_id` field of its own. A row counts only when a
 `succeeded` ledger row with the same `stage`, `unit_id`, and `run_id` exists
 ([runs](../runs/runs-design.md) § Current Rows), so part files left by a crashed batch are
 ignored, and a retry never produces rows that are counted twice.

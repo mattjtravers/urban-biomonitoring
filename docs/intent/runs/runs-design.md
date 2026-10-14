@@ -115,7 +115,8 @@ consistent and the next run repairs it:
 
 The main process works in **batches** of at most `RUN_BATCH_UNITS` (50) units. When a batch's
 units are finished, it writes the batch's table part files
-`curated/<table>/<partitions>/<run_id>-<batch>.parquet` (one per table and partition the batch
+`curated/<table>/<partitions>/<run_id>-<batch>.parquet` (`<batch>` is the batch number from 1,
+zero-padded to four digits; one file per table and partition the batch
 touches), then the ledger part file
 `curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`, then performs the batch's local
 cleanup. The run log is uploaded at the same point (`runs/<run_id>.log`, rewritten each batch).
@@ -203,7 +204,10 @@ a recording genuinely cut short by battery failure). Privacy checks can't be wai
 ## Run Record
 
 Written to the store at `runs/<run_id>.json` (full record) at the start of the run with status `running`,
-and rewritten at the end. Its summary row goes to the `runs` table.
+and rewritten at the end. Its summary row goes to the `runs` table: `run_id`, `stage`, `status`,
+`started_utc`, `ended_utc`, `package_version`, `git_commit`, `git_dirty`, `stage_version`,
+`store_id`, `params_hash`, the five unit counts (`units_total`, `skipped`, `succeeded`,
+`flagged`, `failed`), and `log_key`. The full record stays in `runs/<run_id>.json`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -224,7 +228,9 @@ and rewritten at the end. Its summary row goes to the `runs` table.
 | `outputs` | list | Tables and key prefixes written |
 | `log_key` | `str` | `runs/<run_id>.log` |
 
-A run started with uncommitted changes in the working tree records `git_dirty: true`. In
+A run started with uncommitted changes in the working tree records `git_dirty: true`. Code that
+isn't running from a git working tree (installed from a wheel or an archive) records
+`git_commit: null` and `git_dirty: true`, since nothing shows which commit it is. In
 the `dev` profile, such runs are allowed. In the `processing` profile, every command that creates
 a run refuses to start with uncommitted changes (a `ConfigError`, exit `3`), so real media is
 processed only by code that is committed and has been through CI. `--allow-dirty` overrides the

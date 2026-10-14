@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from tests.conftest import Project, sha256_hex, store_init
+from tests.conftest import Project, sha256_hex
 from urbanbio import config
 from urbanbio.errors import IntegrityError, StorageError
 from urbanbio.storage.store import open_store
@@ -38,13 +38,6 @@ class Crash(Exception):
 @pytest.fixture
 def root(fs_env: Project) -> Path:
     return (fs_env.home / "urbanbio-dev" / "store").resolve()
-
-
-@pytest.fixture
-def fs_store(fs_env: Project) -> Any:
-    result = store_init()
-    assert result.exit_code == 0, result.output
-    return open_store(config.load(with_sites=False))
 
 
 def put(store: Any, key: str, data: bytes = DATA, **kwargs: Any) -> Any:

@@ -333,3 +333,13 @@ def store(backend: str) -> Any:
     result = store_init()
     assert result.exit_code == 0, result.output
     return open_store(config.load(with_sites=False))
+
+
+@pytest.fixture
+def fs_store(fs_env: Project) -> Any:
+    """An initialized, opened `filesystem` store in the dev profile."""
+    from urbanbio.storage.store import open_store
+
+    result = store_init()
+    assert result.exit_code == 0, result.output
+    return open_store(config.load(with_sites=False))

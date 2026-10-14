@@ -21,7 +21,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 ## Write Order
 
 - [ ] **RUN-ORDER-001**: The system shall process each stage's units in batches of at most `RUN_BATCH_UNITS` (50) units.
-- [ ] **RUN-ORDER-002**: When a batch's units are finished, the system shall write, in order: the batch's table part files `curated/<table>/<partitions>/<run_id>-<batch>.parquet`; then the ledger part file `curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`; then the batch's local cleanup (quarantine purges and work-directory deletions); and shall upload the run log to `runs/<run_id>.log` after the ledger part is written.
+- [ ] **RUN-ORDER-002**: When a batch's units are finished, the system shall write, in order: the batch's table part files `curated/<table>/<partitions>/<run_id>-<batch>.parquet` (`<batch>` numbered from 1, zero-padded to four digits); then the ledger part file `curated/stage_units/stage=<stage>/<run_id>-<batch>.parquet`; then the batch's local cleanup (quarantine purges and work-directory deletions); and shall upload the run log to `runs/<run_id>.log` after the ledger part is written.
 - [ ] **RUN-ORDER-003**: The system shall write a unit's store objects (archived FLACs, sidecars, clips) before the ledger part file that cites them.
 - [ ] **RUN-ORDER-004**: The system shall not purge a quarantine original or delete a work-directory FLAC until the ledger rows recording the outputs that justify it are in the store.
 - [ ] **RUN-ORDER-005**: When the `purge` stage deletes originals, the system shall write their `purge` ledger rows in the next batch's ledger part file, or at run end after the last batch.
@@ -54,7 +54,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 ## Run Record
 
 - [ ] **RUN-REC-001**: When a command creates a run, the system shall assign a `run_id` of the form `<stage>-<YYYYMMDDTHHMMSSZ>-<4 hex>` and write the run record to `runs/<run_id>.json` with status `running` before processing any unit.
-- [ ] **RUN-REC-002**: When a run ends, the system shall rewrite `runs/<run_id>.json` with its final status and write its summary row to the `runs` table.
+- [ ] **RUN-REC-002**: When a run ends, the system shall rewrite `runs/<run_id>.json` with its final status and write its summary row to the `runs` table with `run_id`, `stage`, `status`, `started_utc`, `ended_utc`, `package_version`, `git_commit`, `git_dirty`, `stage_version`, `store_id`, `params_hash`, `units_total`, `skipped`, `succeeded`, `flagged`, `failed`, and `log_key`.
 - [ ] **RUN-REC-003**: The system shall end a run `succeeded` when every unit was skipped or succeeded, `partial` when any unit was flagged or failed, and `failed` when a run-level error stopped it.
 - [ ] **RUN-REC-004**: The system shall record in each run record the fields of runs § Run Record: `run_id`, `stage`, `status`, `started_utc`, `ended_utc`, `code` (`package_version`, `git_commit`, `git_dirty`, `stage_version`), `store` (`backend`, `store_id`), `environment`, `models`, `params`, `params_hash`, `scope`, `counts` (with per-ledger-stage counts in `by_stage`), `resources`, `errors`, `outputs`, and `log_key`.
 - [ ] **RUN-REC-005**: The system shall record `resources.peak_rss_mb` as the largest resident set of the main process or any worker, and `resources.wall_clock_s` including time the host spent suspended.
@@ -64,6 +64,7 @@ EARS requirements for [runs](runs-design.md). Markers: `[x]` implemented, `[ ]` 
 ## Dirty Runs
 
 - [ ] **RUN-DIRTY-001**: When a command creates a run while the working tree has uncommitted changes, the system shall record `git_dirty: true` in the run record and in each of its ledger rows.
+- [ ] **RUN-DIRTY-006**: When a command creates a run from code that isn't in a git working tree, the system shall record `git_commit: null` and `git_dirty: true`.
 - [ ] **RUN-DIRTY-002**: While the profile is `processing`, when a command that creates a run starts with uncommitted changes in the working tree and without `--allow-dirty`, the system shall refuse with a `ConfigError` (exit `3`).
 - [ ] **RUN-DIRTY-003**: While the profile is `processing`, the system shall accept `--allow-dirty` only on `ingest`, `screen`, `speech sample`, `archive`, `detect`, and `process`, and shall refuse it with a `ConfigError` on `rescreen`, `purge`, `deployment create`, `deployment end`, `runs unflag`, and `speech label --import`.
 - [ ] **RUN-DIRTY-004**: When `archive` or `process` runs with `--allow-dirty`, the system shall behave as if `--no-purge` were given.
